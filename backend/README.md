@@ -26,8 +26,10 @@ MCP、LangGraph、RAG、订单和售后不属于当前骨架，将在商品咨�
 
 ```powershell
 cd backend
-uv sync --dev
-uv run uvicorn app.main:app --reload
+uv sync --dev --no-cache
+uv run --no-cache uvicorn app.main:app --reload
 ```
+
+这里使用 `--no-cache`，以兼容 Python 和 `uv` 缓存位于不同磁盘的 Windows 开发环境。
 
 健康检查地址：`http://127.0.0.1:8000/api/health`
