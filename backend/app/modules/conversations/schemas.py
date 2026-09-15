@@ -134,3 +134,41 @@ class ChatResponse(BaseModel):
         if self.assistant_message.created_at < self.user_message.created_at:
             raise ValueError("AI 回复时间不能早于用户消息")
         return self
+
+
+class ChatStreamStart(BaseModel):
+    """SSE 连接建立后首先返回的会话和消息编号。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: UUID
+    mode: ConversationMode
+    user_message: ConversationMessage
+    assistant_message_id: UUID
+
+
+class ChatStreamStatus(BaseModel):
+    """模型或商品工具当前执行到的阶段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phase: Literal["model", "tool"]
+    state: Literal["started", "completed"]
+    tool_calls: int = Field(default=0, ge=0)
+
+
+class ChatStreamDelta(BaseModel):
+    """模型新生成的一段回复文本。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1)
+
+
+class ChatStreamError(BaseModel):
+    """SSE 已建立后返回的可处理错误。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: int = Field(ge=400, le=599)
+    detail: str = Field(min_length=1)

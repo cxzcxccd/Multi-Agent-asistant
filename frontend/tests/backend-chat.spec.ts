@@ -15,35 +15,79 @@ async function send(page: Page, message: string) {
 }
 
 async function returnReply(route: Route, reply: string) {
-  // 模拟 HTTP 响应，只验证浏览器是否真的发送请求，不消耗模型额度。
+  // 模拟 SSE 响应，只验证浏览器是否真的处理事件流，不消耗模型额度。
   const request: ChatRequestBody = route.request().postDataJSON();
   const createdAt = new Date().toISOString();
+  const assistantMessageId = crypto.randomUUID();
+  const middle = Math.max(1, Math.floor(reply.length / 2));
+  const firstPart = reply.slice(0, middle);
+  const secondPart = reply.slice(middle);
+  const userMessage = {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: request.message,
+    created_at: createdAt,
+  };
+  const assistantMessage = {
+    id: assistantMessageId,
+    role: 'assistant',
+    content: reply,
+    created_at: createdAt,
+  };
+  const response = {
+    conversation_id: conversationId,
+    mode: 'ai',
+    user_message: userMessage,
+    assistant_message: assistantMessage,
+    run: { model_calls: 1, tool_rounds: 0, tool_calls: 0 },
+  };
+
+  const events: string[] = [];
+  events.push(
+    createSseEvent('start', {
+      conversation_id: conversationId,
+      mode: 'ai',
+      user_message: userMessage,
+      assistant_message_id: assistantMessageId,
+    }),
+  );
+  events.push(
+    createSseEvent('status', {
+      phase: 'model',
+      state: 'started',
+      tool_calls: 0,
+    }),
+  );
+  events.push(createSseEvent('delta', { content: firstPart }));
+  if (secondPart) {
+    events.push(createSseEvent('delta', { content: secondPart }));
+  }
+  events.push(createSseEvent('complete', response));
 
   await route.fulfill({
     status: 200,
-    json: {
-      conversation_id: conversationId,
-      mode: 'ai',
-      user_message: {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: request.message,
-        created_at: createdAt,
-      },
-      assistant_message: {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: reply,
-        created_at: createdAt,
-      },
-      run: { model_calls: 1, tool_rounds: 0, tool_calls: 0 },
-    },
+    contentType: 'text/event-stream',
+    body: events.join(''),
+  });
+}
+
+function createSseEvent(name: string, data: unknown): string {
+  const jsonData = JSON.stringify(data);
+  return `event: ${name}\ndata: ${jsonData}\n\n`;
+}
+
+async function returnStreamError(route: Route, status: number, detail: string) {
+  const body = createSseEvent('error', { status, detail });
+  await route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body,
   });
 }
 
 test('你是谁和无商品关键词的追问都调用后端，并沿用会话', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     await returnReply(route, `后端回复：${body.message}`);
@@ -68,7 +112,7 @@ test('你是谁和无商品关键词的追问都调用后端，并沿用会话',
 
 test('商品咨询后的省略主语追问使用同一个后端会话', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     await returnReply(route, `后端回复：${body.message}`);
@@ -87,7 +131,7 @@ test('商品咨询后的省略主语追问使用同一个后端会话', async ({
 
 test('询问人工智能或真人身份时仍然调用后端', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     await returnReply(route, `后端回复：${body.message}`);
@@ -105,7 +149,7 @@ test('询问人工智能或真人身份时仍然调用后端', async ({ page }) 
 
 test('明确请求转人工时进入人工队列', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     await returnReply(route, '后端回复。');
@@ -120,7 +164,7 @@ test('明确请求转人工时进入人工队列', async ({ page }) => {
 
 test('查看模拟订单后询问你是谁，不会被待选订单状态拦截', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     await returnReply(route, '我是后端客服。');
@@ -138,13 +182,10 @@ test('查看模拟订单后询问你是谁，不会被待选订单状态拦截',
 
 test('后端失败时显示错误，重试仍然调用后端', async ({ page }) => {
   let requestCount = 0;
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     requestCount += 1;
     if (requestCount === 1) {
-      await route.fulfill({
-        status: 502,
-        json: { detail: 'AI 客服暂时无法生成回复' },
-      });
+      await returnStreamError(route, 502, 'AI 客服暂时无法生成回复');
       return;
     }
     await returnReply(route, '重试后收到的后端回复。');
@@ -162,11 +203,11 @@ test('后端失败时显示错误，重试仍然调用后端', async ({ page }) 
 
 test('后端重启导致会话失效时，仅重建一次并重试', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     requests.push(body);
     if (requests.length === 2) {
-      await route.fulfill({ status: 404, json: { detail: '未找到会话' } });
+      await returnStreamError(route, 404, '未找到会话');
       return;
     }
     await returnReply(route, `后端回复：${body.message}`);
@@ -189,7 +230,7 @@ test('停止后不显示迟到回复，可以继续发送新消息', async ({ pa
   const responseGate = new Promise<void>((resolve) => {
     releaseReply = resolve;
   });
-  await page.route('**/api/chat', async (route) => {
+  await page.route('**/api/chat/stream', async (route) => {
     const body: ChatRequestBody = route.request().postDataJSON();
     if (body.message === '你是谁') {
       await responseGate;
@@ -201,7 +242,7 @@ test('停止后不显示迟到回复，可以继续发送新消息', async ({ pa
   await page.goto('/');
   const log = page.getByRole('log', { name: '聊天记录' });
 
-  const requestStarted = page.waitForRequest('**/api/chat');
+  const requestStarted = page.waitForRequest('**/api/chat/stream');
   await send(page, '你是谁');
   await requestStarted;
   await page.getByRole('button', { name: '停止输出', exact: true }).click();

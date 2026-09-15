@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { ChatApiError, sendChatMessage } from './api';
-import type { ChatResponse } from './api';
+import { ChatApiError, streamChatMessage } from './api';
+import type { ChatStreamCallbacks } from './api';
 import { buyers, findOrder, findProduct, orders, policies, products } from './data';
 import type { BuyerId, Conversation, DemoState, Draft, Message, RunEvent } from './types';
 
@@ -614,6 +614,7 @@ async function sendBackendReply(input: BackendReplyInput) {
   const { conversationId, text, token, runId, started, isLive } = input;
   const conversation = getConversation(conversationId)!;
   const controller = new AbortController();
+  let streamingMessageId: string | undefined;
   backendRequests.set(conversationId, controller);
 
   update((s) => {
@@ -622,7 +623,7 @@ async function sendBackendReply(input: BackendReplyInput) {
       ownerTab: tabId,
       conversationId,
       query: text,
-      module: 'AI 商品客服',
+      module: 'LangGraph 客服',
       origin: 'backend',
       status: 'running',
       startedAt: now(),
@@ -631,61 +632,145 @@ async function sendBackendReply(input: BackendReplyInput) {
           id: uid(),
           type: 'Agent',
           name: 'customer_service_graph',
-          label: 'LangGraph 正在处理商品咨询',
+          label: 'LangGraph 正在处理消息',
           status: 'running',
         },
       ],
     });
   });
 
-  try {
-    let response: ChatResponse;
+  const callbacks: ChatStreamCallbacks = {
+    onStart(data) {
+      streamingMessageId = data.assistant_message_id;
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId)!;
+        target.remoteId = data.conversation_id;
+        target.mode = data.mode;
+        addMessage(target, 'assistant', '', {
+          id: data.assistant_message_id,
+          streaming: true,
+          origin: 'backend',
+        });
+      });
+    },
+    onStatus(data) {
+      if (!isLive()) {
+        return;
+      }
 
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId)!;
+        const run = s.runs.find((item) => item.id === runId)!;
+
+        if (data.phase === 'model' && data.state === 'started') {
+          const message = target.messages.find((item) => item.id === streamingMessageId);
+          if (message) {
+            message.text = '';
+          }
+          run.events[0].label = '模型正在生成回复';
+          return;
+        }
+
+        if (data.phase === 'tool' && data.state === 'started') {
+          run.events.push({
+            id: uid(),
+            type: 'Tool',
+            name: 'catalog_tools',
+            label: '正在查询商品数据',
+            status: 'running',
+          });
+          return;
+        }
+
+        let toolEvent: RunEvent | undefined;
+        for (let index = run.events.length - 1; index >= 0; index -= 1) {
+          const event = run.events[index];
+          if (event.type === 'Tool' && event.status === 'running') {
+            toolEvent = event;
+            break;
+          }
+        }
+        if (toolEvent) {
+          toolEvent.status = 'success';
+          toolEvent.result = `完成 ${data.tool_calls} 次商品工具调用`;
+        }
+      });
+    },
+    onDelta(content) {
+      if (!isLive()) {
+        return;
+      }
+
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId)!;
+        const message = target.messages.find((item) => item.id === streamingMessageId);
+        if (message) {
+          message.text += content;
+        }
+      });
+    },
+    onComplete(response) {
+      if (!isLive()) {
+        return;
+      }
+
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId)!;
+        const run = s.runs.find((item) => item.id === runId)!;
+        const message = target.messages.find((item) => item.id === streamingMessageId)!;
+
+        target.remoteId = response.conversation_id;
+        target.mode = response.mode;
+        // 真实对话的上下文由后端历史消息维护，不使用脚本猜测商品或预算。
+        target.context = {};
+        Object.assign(message, {
+          id: response.assistant_message.id,
+          text: response.assistant_message.content,
+          time: response.assistant_message.created_at,
+          streaming: false,
+        });
+
+        run.status = 'success';
+        run.duration = Math.round(performance.now() - started);
+        Object.assign(run.events[0], {
+          status: 'success',
+          duration: run.duration,
+          result: `模型调用 ${response.run.model_calls} 次，工具调用 ${response.run.tool_calls} 次`,
+        });
+      });
+    },
+  };
+
+  async function requestStream(remoteId?: string) {
+    await streamChatMessage(conversation.buyer, text, remoteId, callbacks, controller.signal);
+  }
+
+  try {
     try {
-      response = await sendChatMessage(
-        conversation.buyer,
-        text,
-        conversation.remoteId,
-        controller.signal,
-      );
+      await requestStream(conversation.remoteId);
     } catch (error) {
       const remoteConversationExpired =
         error instanceof ChatApiError && error.status === 404 && Boolean(conversation.remoteId);
 
-      if (!remoteConversationExpired) throw error;
+      if (!remoteConversationExpired) {
+        throw error;
+      }
 
       update((s) => {
         const target = s.conversations.find((item) => item.id === conversationId);
-        if (target) delete target.remoteId;
+        if (target) {
+          delete target.remoteId;
+        }
       });
-      response = await sendChatMessage(conversation.buyer, text, undefined, controller.signal);
+      await requestStream();
     }
-
-    if (!isLive()) return;
-
-    update((s) => {
-      const target = s.conversations.find((item) => item.id === conversationId)!;
-      const run = s.runs.find((item) => item.id === runId)!;
-      target.remoteId = response.conversation_id;
-      target.mode = response.mode;
-      // 真实对话的上下文由后端历史消息维护，不使用脚本猜测商品或预算。
-      target.context = {};
-      addMessage(target, 'assistant', response.assistant_message.content, {
-        id: response.assistant_message.id,
-        time: response.assistant_message.created_at,
-        origin: 'backend',
-      });
-      run.status = 'success';
-      run.duration = Math.round(performance.now() - started);
-      Object.assign(run.events[0], {
-        status: 'success',
-        duration: run.duration,
-        result: `模型调用 ${response.run.model_calls} 次，工具调用 ${response.run.tool_calls} 次`,
-      });
-    });
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') return;
-    if (!isLive()) return;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    if (!isLive()) {
+      return;
+    }
 
     const message =
       error instanceof ChatApiError
@@ -701,10 +786,19 @@ async function sendBackendReply(input: BackendReplyInput) {
         duration: run.duration,
         result: message,
       });
-      addMessage(target, 'assistant', message, {
-        retryText: text,
-        origin: 'backend',
-      });
+      const streamingMessage = target.messages.find((item) => item.id === streamingMessageId);
+      if (streamingMessage) {
+        Object.assign(streamingMessage, {
+          text: message,
+          streaming: false,
+          retryText: text,
+        });
+      } else {
+        addMessage(target, 'assistant', message, {
+          retryText: text,
+          origin: 'backend',
+        });
+      }
     });
   } finally {
     if (backendRequests.get(conversationId) === controller) {

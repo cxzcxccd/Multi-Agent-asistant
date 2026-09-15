@@ -1,6 +1,8 @@
 """使用 LangGraph 编排模型与商品工具的客服运行时。"""
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -8,11 +10,13 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     AnyMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
 )
+from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph, add_messages
@@ -44,6 +48,20 @@ class RuntimeResult:
     model_calls: int
     tool_rounds: int
     tool_calls: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeStreamEvent:
+    """客服运行过程中发送给上层的单个流式事件。"""
+
+    type: Literal["model_start", "delta", "tool_start", "tool_end", "complete"]
+    text: str = ""
+    tool_calls: int = 0
+    result: RuntimeResult | None = None
+
+
+StreamEventCallback = Callable[[RuntimeStreamEvent], Awaitable[None]]
+STREAM_CALLBACK_KEY = "customer_service_stream_callback"
 
 
 class RuntimeErrorBase(RuntimeError):
@@ -151,6 +169,50 @@ class CustomerServiceRuntime:
             raise RuntimeLoopLimitError("客服运行图超过了最大执行步数") from exc
         return self._build_result(state)
 
+    async def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: RunnableConfig | None = None,
+    ) -> AsyncIterator[RuntimeStreamEvent]:
+        """运行客服图，并在模型或工具产生进度时立即返回事件。"""
+
+        event_queue: asyncio.Queue[RuntimeStreamEvent | BaseException | None]
+        event_queue = asyncio.Queue()
+
+        async def publish(event: RuntimeStreamEvent) -> None:
+            await event_queue.put(event)
+
+        stream_config = self._with_stream_callback(config, publish)
+
+        async def run_graph() -> None:
+            try:
+                result = await self.ainvoke(messages, config=stream_config)
+                complete_event = RuntimeStreamEvent(
+                    type="complete",
+                    result=result,
+                )
+                await event_queue.put(complete_event)
+            except BaseException as error:
+                await event_queue.put(error)
+            finally:
+                await event_queue.put(None)
+
+        graph_task = asyncio.create_task(run_graph())
+
+        try:
+            while True:
+                event = await event_queue.get()
+                if event is None:
+                    break
+                if isinstance(event, BaseException):
+                    raise event
+                yield event
+        finally:
+            if not graph_task.done():
+                graph_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await graph_task
+
     def _build_graph(self) -> Any:
         """创建“模型—工具—模型”的状态图。"""
 
@@ -196,10 +258,20 @@ class CustomerServiceRuntime:
     ) -> dict[str, Any]:
         """异步执行模型节点。"""
 
-        response = await self._model_client.ainvoke(
-            [SystemMessage(content=self._system_prompt), *state["messages"]],
-            config=config,
-        )
+        messages = [SystemMessage(content=self._system_prompt), *state["messages"]]
+        callback = self._get_stream_callback(config)
+
+        if callback is None:
+            response = await self._model_client.ainvoke(
+                messages,
+                config=config,
+            )
+        else:
+            response = await self._stream_model_response(
+                messages,
+                config,
+                callback,
+            )
         self._validate_model_response(response)
         return {
             "messages": [response],
@@ -229,14 +301,63 @@ class CustomerServiceRuntime:
     ) -> dict[str, Any]:
         """异步执行当前 AI 消息请求的全部商品工具。"""
 
-        result = await self._tool_node.ainvoke(state, config=config)
         last_message = state["messages"][-1]
+        requested_tool_count = self._count_requested_tools(last_message)
+        callback = self._get_stream_callback(config)
+
+        if callback is not None:
+            await callback(
+                RuntimeStreamEvent(
+                    type="tool_start",
+                    tool_calls=requested_tool_count,
+                )
+            )
+
+        result = await self._tool_node.ainvoke(state, config=config)
+
+        if callback is not None:
+            await callback(
+                RuntimeStreamEvent(
+                    type="tool_end",
+                    tool_calls=requested_tool_count,
+                )
+            )
+
         return {
             "messages": result["messages"],
             "tool_rounds": state.get("tool_rounds", 0) + 1,
             "tool_calls": state.get("tool_calls", 0)
-            + self._count_requested_tools(last_message),
+            + requested_tool_count,
         }
+
+    async def _stream_model_response(
+        self,
+        messages: Sequence[BaseMessage],
+        config: RunnableConfig,
+        callback: StreamEventCallback,
+    ) -> AIMessage:
+        """读取模型消息片段，同时拼接出供 LangGraph 使用的完整消息。"""
+
+        await callback(RuntimeStreamEvent(type="model_start"))
+        combined_chunk: AIMessageChunk | None = None
+
+        async for chunk in self._model_client.astream(messages, config=config):
+            if combined_chunk is None:
+                combined_chunk = chunk
+            else:
+                combined_chunk = combined_chunk + chunk
+
+            text = chunk.text
+            if text:
+                await callback(RuntimeStreamEvent(type="delta", text=text))
+
+        if combined_chunk is None:
+            raise RuntimeErrorBase("模型流式调用没有返回任何消息")
+
+        response = message_chunk_to_message(combined_chunk)
+        if not isinstance(response, AIMessage):
+            raise RuntimeErrorBase("模型流式调用没有生成 AI 消息")
+        return response
 
     def _route_after_model(
         self,
@@ -314,6 +435,29 @@ class CustomerServiceRuntime:
         graph_config: RunnableConfig = dict(config or {})
         graph_config["recursion_limit"] = self._max_tool_rounds * 2 + 4
         return graph_config
+
+    @staticmethod
+    def _with_stream_callback(
+        config: RunnableConfig | None,
+        callback: StreamEventCallback,
+    ) -> RunnableConfig:
+        """复制运行配置并加入仅供本次请求使用的事件回调。"""
+
+        stream_config: RunnableConfig = dict(config or {})
+        configurable = dict(stream_config.get("configurable") or {})
+        configurable[STREAM_CALLBACK_KEY] = callback
+        stream_config["configurable"] = configurable
+        return stream_config
+
+    @staticmethod
+    def _get_stream_callback(
+        config: RunnableConfig,
+    ) -> StreamEventCallback | None:
+        """从运行配置中读取流式事件回调。"""
+
+        configurable = config.get("configurable") or {}
+        callback = configurable.get(STREAM_CALLBACK_KEY)
+        return callback if callable(callback) else None
 
     @staticmethod
     def _build_result(state: CustomerServiceState) -> RuntimeResult:

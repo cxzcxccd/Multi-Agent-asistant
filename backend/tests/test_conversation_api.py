@@ -8,7 +8,7 @@ from uuid import UUID
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage
 
-from app.ai.runtime import RuntimeResult
+from app.ai.runtime import RuntimeResult, RuntimeStreamEvent
 from app.main import app
 from app.modules.conversations.router import get_conversation_service
 from app.modules.conversations.schemas import ConversationMode
@@ -31,6 +31,22 @@ class ReplyRuntime:
             tool_rounds=0,
             tool_calls=0,
         )
+
+    async def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> AsyncIterator[RuntimeStreamEvent]:
+        """按两个文本片段返回一轮完整的模型运行。"""
+
+        result = await self.ainvoke(messages, config=config)
+        yield RuntimeStreamEvent(type="model_start")
+        yield RuntimeStreamEvent(type="delta", text="收到：")
+        yield RuntimeStreamEvent(
+            type="delta",
+            text=str(messages[-1].content),
+        )
+        yield RuntimeStreamEvent(type="complete", result=result)
 
 
 @asynccontextmanager
@@ -94,6 +110,30 @@ def test_chat_creates_and_continues_a_conversation() -> None:
                 "收到：推荐一款耳机",
                 "预算三百元",
                 "收到：预算三百元",
+            ]
+
+    asyncio.run(run_scenario())
+
+
+def test_chat_stream_returns_named_sse_events_and_saves_messages() -> None:
+    async def run_scenario() -> None:
+        async with conversation_client() as (client, service):
+            response = await client.post(
+                "/api/chat/stream",
+                json={"buyer_id": "A", "message": "你是谁"},
+            )
+
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert "event: start\n" in response.text
+            assert response.text.count("event: delta\n") == 2
+            assert "event: complete\n" in response.text
+
+            conversations = service.list_conversations("A")
+            assert len(conversations) == 1
+            assert [message.content for message in conversations[0].messages] == [
+                "你是谁",
+                "收到：你是谁",
             ]
 
     asyncio.run(run_scenario())

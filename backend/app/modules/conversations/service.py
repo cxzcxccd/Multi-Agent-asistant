@@ -1,9 +1,10 @@
 """会话生命周期、消息保存和 LangGraph 客服调用规则。"""
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -12,6 +13,7 @@ from app.ai.model_client import ModelClientError
 from app.ai.runtime import (
     RuntimeErrorBase,
     RuntimeResult,
+    RuntimeStreamEvent,
     create_customer_service_runtime,
 )
 from app.modules.conversations.repository import ConversationRepository
@@ -20,6 +22,9 @@ from app.modules.conversations.schemas import (
     ChatRequest,
     ChatResponse,
     ChatRunStats,
+    ChatStreamDelta,
+    ChatStreamStart,
+    ChatStreamStatus,
     Conversation,
     ConversationMessage,
     ConversationMode,
@@ -35,6 +40,30 @@ class RuntimeProtocol(Protocol):
         messages: Sequence[BaseMessage],
         config: dict[str, object] | None = None,
     ) -> RuntimeResult: ...
+
+    def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> AsyncIterator[RuntimeStreamEvent]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTurn:
+    """完成模型调用前需要保留的一次会话处理上下文。"""
+
+    existing: Conversation | None
+    conversation: Conversation
+    user_message: ConversationMessage
+    model_messages: list[BaseMessage]
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationStreamEvent:
+    """会话服务交给 SSE 路由的一个命名事件。"""
+
+    name: Literal["start", "status", "delta", "complete"]
+    data: ChatStreamStart | ChatStreamStatus | ChatStreamDelta | ChatResponse
 
 
 class ConversationServiceError(RuntimeError):
@@ -90,80 +119,153 @@ class ConversationService:
         lock = self._conversation_locks.setdefault(conversation_id, asyncio.Lock())
 
         async with lock:
-            existing = self.repository.get(conversation_id)
-            conversation = self._resolve_conversation(
-                existing=existing,
-                conversation_id=conversation_id,
-                buyer_id=request.buyer_id,
-                first_message=request.message,
-                allow_create=request.conversation_id is None,
-            )
-            user_message = ConversationMessage(
-                id=self._id_factory(),
-                role=MessageRole.USER,
-                content=request.message,
-                created_at=max(self._clock(), conversation.updated_at),
-            )
-            model_messages = self._to_model_messages(conversation.messages)
-            model_messages.append(
-                HumanMessage(
-                    content=user_message.content,
-                    id=str(user_message.id),
-                )
-            )
+            turn = self._prepare_turn(request, conversation_id)
 
             try:
                 result = await self._get_runtime().ainvoke(
-                    model_messages,
-                    config={
-                        "configurable": {"thread_id": str(conversation_id)},
-                        "tags": ["customer-service", str(request.buyer_id)],
-                    },
+                    turn.model_messages,
+                    config=self._runtime_config(conversation_id, request.buyer_id),
                 )
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
 
-            reply_text = result.reply.text.strip()
-            if not reply_text:
-                raise AssistantReplyError("AI 客服没有返回有效的文本回复")
+            return self._save_completed_turn(turn, result)
 
-            assistant_created_at = max(self._clock(), user_message.created_at)
-            assistant_message = ConversationMessage(
-                id=self._id_factory(),
-                role=MessageRole.ASSISTANT,
-                content=reply_text,
-                created_at=assistant_created_at,
-            )
-            updated = Conversation(
-                id=conversation.id,
-                buyer_id=conversation.buyer_id,
-                title=conversation.title,
-                mode=conversation.mode,
-                messages=[
-                    *conversation.messages,
-                    user_message,
-                    assistant_message,
-                ],
-                created_at=conversation.created_at,
-                updated_at=assistant_message.created_at,
-            )
+    async def stream_message(
+        self,
+        request: ChatRequest,
+    ) -> AsyncIterator[ConversationStreamEvent]:
+        """创建或继续会话，并实时返回模型和商品工具事件。"""
 
-            if existing is None:
-                self.repository.add(updated)
-            else:
-                self.repository.update(updated)
+        conversation_id = request.conversation_id or self._id_factory()
+        lock = self._conversation_locks.setdefault(conversation_id, asyncio.Lock())
 
-            return ChatResponse(
-                conversation_id=updated.id,
-                mode=updated.mode,
-                user_message=user_message,
-                assistant_message=assistant_message,
-                run=ChatRunStats(
-                    model_calls=result.model_calls,
-                    tool_rounds=result.tool_rounds,
-                    tool_calls=result.tool_calls,
-                ),
+        async with lock:
+            turn = self._prepare_turn(request, conversation_id)
+            assistant_message_id = self._id_factory()
+            start_data = ChatStreamStart(
+                conversation_id=conversation_id,
+                mode=turn.conversation.mode,
+                user_message=turn.user_message,
+                assistant_message_id=assistant_message_id,
             )
+            yield ConversationStreamEvent(name="start", data=start_data)
+
+            try:
+                runtime_events = self._get_runtime().astream(
+                    turn.model_messages,
+                    config=self._runtime_config(conversation_id, request.buyer_id),
+                )
+                async for runtime_event in runtime_events:
+                    if runtime_event.type == "complete":
+                        result = runtime_event.result
+                        if result is None:
+                            raise RuntimeErrorBase("流式运行结束时缺少完整结果")
+                        response = self._save_completed_turn(
+                            turn,
+                            result,
+                            assistant_message_id,
+                        )
+                        yield ConversationStreamEvent(
+                            name="complete",
+                            data=response,
+                        )
+                        continue
+
+                    stream_event = self._convert_runtime_event(runtime_event)
+                    if stream_event is not None:
+                        yield stream_event
+            except (ModelClientError, RuntimeErrorBase) as exc:
+                raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
+
+    def _prepare_turn(
+        self,
+        request: ChatRequest,
+        conversation_id: UUID,
+    ) -> PreparedTurn:
+        """校验会话并准备用户消息和 LangChain 历史。"""
+
+        existing = self.repository.get(conversation_id)
+        conversation = self._resolve_conversation(
+            existing=existing,
+            conversation_id=conversation_id,
+            buyer_id=request.buyer_id,
+            first_message=request.message,
+            allow_create=request.conversation_id is None,
+        )
+        user_message = ConversationMessage(
+            id=self._id_factory(),
+            role=MessageRole.USER,
+            content=request.message,
+            created_at=max(self._clock(), conversation.updated_at),
+        )
+        model_messages = self._to_model_messages(conversation.messages)
+        human_message = HumanMessage(
+            content=user_message.content,
+            id=str(user_message.id),
+        )
+        model_messages.append(human_message)
+
+        return PreparedTurn(
+            existing=existing,
+            conversation=conversation,
+            user_message=user_message,
+            model_messages=model_messages,
+        )
+
+    def _save_completed_turn(
+        self,
+        turn: PreparedTurn,
+        result: RuntimeResult,
+        assistant_message_id: UUID | None = None,
+    ) -> ChatResponse:
+        """校验最终回复，并一次保存用户消息和 AI 消息。"""
+
+        reply_text = result.reply.text.strip()
+        if not reply_text:
+            raise AssistantReplyError("AI 客服没有返回有效的文本回复")
+
+        if assistant_message_id is None:
+            assistant_message_id = self._id_factory()
+
+        assistant_created_at = max(self._clock(), turn.user_message.created_at)
+        assistant_message = ConversationMessage(
+            id=assistant_message_id,
+            role=MessageRole.ASSISTANT,
+            content=reply_text,
+            created_at=assistant_created_at,
+        )
+        conversation = turn.conversation
+        updated = Conversation(
+            id=conversation.id,
+            buyer_id=conversation.buyer_id,
+            title=conversation.title,
+            mode=conversation.mode,
+            messages=[
+                *conversation.messages,
+                turn.user_message,
+                assistant_message,
+            ],
+            created_at=conversation.created_at,
+            updated_at=assistant_message.created_at,
+        )
+
+        if turn.existing is None:
+            self.repository.add(updated)
+        else:
+            self.repository.update(updated)
+
+        return ChatResponse(
+            conversation_id=updated.id,
+            mode=updated.mode,
+            user_message=turn.user_message,
+            assistant_message=assistant_message,
+            run=ChatRunStats(
+                model_calls=result.model_calls,
+                tool_rounds=result.tool_rounds,
+                tool_calls=result.tool_calls,
+            ),
+        )
 
     def get_conversation(
         self,
@@ -182,6 +284,53 @@ class ConversationService:
         """返回指定买家的全部会话，最近更新的排在前面。"""
 
         return self.repository.list_by_buyer(buyer_id)
+
+    @staticmethod
+    def _runtime_config(
+        conversation_id: UUID,
+        buyer_id: BuyerId,
+    ) -> dict[str, object]:
+        """创建一次客服运行使用的 LangGraph 配置。"""
+
+        return {
+            "configurable": {"thread_id": str(conversation_id)},
+            "tags": ["customer-service", str(buyer_id)],
+        }
+
+    @staticmethod
+    def _convert_runtime_event(
+        event: RuntimeStreamEvent,
+    ) -> ConversationStreamEvent | None:
+        """把底层运行事件转换为稳定的会话 SSE 事件。"""
+
+        if event.type == "delta" and event.text:
+            delta = ChatStreamDelta(content=event.text)
+            return ConversationStreamEvent(name="delta", data=delta)
+
+        if event.type == "model_start":
+            status_data = ChatStreamStatus(
+                phase="model",
+                state="started",
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type == "tool_start":
+            status_data = ChatStreamStatus(
+                phase="tool",
+                state="started",
+                tool_calls=event.tool_calls,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type == "tool_end":
+            status_data = ChatStreamStatus(
+                phase="tool",
+                state="completed",
+                tool_calls=event.tool_calls,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        return None
 
     def _get_runtime(self) -> RuntimeProtocol:
         """首次发送消息时才创建真实模型运行时。"""

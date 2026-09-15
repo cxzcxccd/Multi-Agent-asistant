@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.ai.model_client import ModelInvocationError
-from app.ai.runtime import RuntimeResult
+from app.ai.runtime import RuntimeResult, RuntimeStreamEvent
 from app.modules.conversations.repository import ConversationRepository
 from app.modules.conversations.schemas import (
     ChatRequest,
@@ -26,6 +26,7 @@ from app.modules.conversations.service import (
     ConversationNotFoundError,
     ConversationService,
     ConversationUnavailableError,
+    ConversationStreamEvent,
 )
 
 
@@ -97,6 +98,26 @@ class EchoRuntime:
             tool_rounds=0,
             tool_calls=0,
         )
+
+
+class FailingStreamRuntime:
+    """先返回一个文本片段，再模拟模型连接失败。"""
+
+    async def ainvoke(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> RuntimeResult:
+        raise ModelInvocationError("模型不可用")
+
+    async def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> AsyncIterator[RuntimeStreamEvent]:
+        yield RuntimeStreamEvent(type="model_start")
+        yield RuntimeStreamEvent(type="delta", text="未完成")
+        raise ModelInvocationError("模型不可用")
 
 
 def id_factory(values: Sequence[UUID]) -> Callable[[], UUID]:
@@ -317,6 +338,28 @@ def test_service_rejects_empty_model_reply_without_saving() -> None:
 
     with pytest.raises(AssistantReplyError, match="有效的文本回复"):
         asyncio.run(service.send_message(ChatRequest(buyer_id="A", message="你好")))
+
+    assert repository.count() == 0
+
+
+def test_stream_failure_does_not_save_partial_messages() -> None:
+    repository = ConversationRepository()
+    service = ConversationService(
+        repository=repository,
+        runtime=FailingStreamRuntime(),
+        id_factory=id_factory([uuid4(), uuid4(), uuid4()]),
+        clock=StepClock(),
+    )
+
+    async def collect_events() -> list[ConversationStreamEvent]:
+        events: list[ConversationStreamEvent] = []
+        stream = service.stream_message(ChatRequest(buyer_id="A", message="你好"))
+        async for event in stream:
+            events.append(event)
+        return events
+
+    with pytest.raises(AssistantReplyError):
+        asyncio.run(collect_events())
 
     assert repository.count() == 0
 

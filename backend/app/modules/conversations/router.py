@@ -1,15 +1,19 @@
 """会话与消息的 FastAPI 路由。"""
 
+from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Annotated, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi.responses import StreamingResponse
 
+from app.api.stream import encode_sse
 from app.modules.conversations.schemas import (
     BuyerId,
     ChatRequest,
     ChatResponse,
+    ChatStreamError,
     Conversation,
 )
 from app.modules.conversations.service import (
@@ -38,20 +42,24 @@ ConversationServiceDependency = Annotated[
 BuyerQuery = Annotated[BuyerId, Query(description="当前买家编号")]
 
 
+def conversation_error_status(error: ConversationServiceError) -> int:
+    """返回会话业务异常对应的 HTTP 状态码。"""
+
+    if isinstance(error, ConversationNotFoundError):
+        return status.HTTP_404_NOT_FOUND
+    if isinstance(error, ConversationAccessError):
+        return status.HTTP_403_FORBIDDEN
+    if isinstance(error, ConversationUnavailableError):
+        return status.HTTP_409_CONFLICT
+    if isinstance(error, AssistantReplyError):
+        return status.HTTP_502_BAD_GATEWAY
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
 def raise_http_error(error: ConversationServiceError) -> NoReturn:
     """把会话业务异常转换成稳定的 HTTP 错误响应。"""
 
-    if isinstance(error, ConversationNotFoundError):
-        status_code = status.HTTP_404_NOT_FOUND
-    elif isinstance(error, ConversationAccessError):
-        status_code = status.HTTP_403_FORBIDDEN
-    elif isinstance(error, ConversationUnavailableError):
-        status_code = status.HTTP_409_CONFLICT
-    elif isinstance(error, AssistantReplyError):
-        status_code = status.HTTP_502_BAD_GATEWAY
-    else:
-        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-
+    status_code = conversation_error_status(error)
     raise HTTPException(status_code=status_code, detail=str(error)) from error
 
 
@@ -76,6 +84,38 @@ async def chat(
         return await service.send_message(request)
     except ConversationServiceError as error:
         raise_http_error(error)
+
+
+@router.post(
+    "/chat/stream",
+    response_class=StreamingResponse,
+    summary="以 SSE 方式发送消息给 AI 客服",
+)
+async def stream_chat(
+    request: ChatRequest,
+    service: ConversationServiceDependency,
+) -> StreamingResponse:
+    """逐步返回模型文本、工具进度和最终会话结果。"""
+
+    async def event_source() -> AsyncIterator[str]:
+        try:
+            async for event in service.stream_message(request):
+                yield encode_sse(event.name, event.data)
+        except ConversationServiceError as error:
+            error_data = ChatStreamError(
+                status=conversation_error_status(error),
+                detail=str(error),
+            )
+            yield encode_sse("error", error_data)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(

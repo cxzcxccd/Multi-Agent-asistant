@@ -3,12 +3,13 @@
 import asyncio
 import json
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import pytest
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     SystemMessage,
@@ -22,6 +23,7 @@ from app.ai.runtime import (
     RuntimeConfigurationError,
     RuntimeInputError,
     RuntimeLoopLimitError,
+    RuntimeStreamEvent,
     load_customer_service_prompt,
 )
 from app.ai.tools.catalog import get_catalog_tools
@@ -50,6 +52,32 @@ class FakeModelClient:
     ) -> AIMessage:
         self.calls.append(("ainvoke", list(messages), config))
         return self._responses.popleft()
+
+    async def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: RunnableConfig | None = None,
+    ) -> AsyncIterator[AIMessageChunk]:
+        """把预设回复拆成两个片段，模拟模型流式输出。"""
+
+        self.calls.append(("astream", list(messages), config))
+        response = self._responses.popleft()
+
+        if response.tool_calls:
+            yield AIMessageChunk(
+                content=response.content,
+                tool_calls=response.tool_calls,
+            )
+            return
+
+        text = str(response.content)
+        middle = max(1, len(text) // 2)
+        first_part = text[:middle]
+        second_part = text[middle:]
+        if first_part:
+            yield AIMessageChunk(content=first_part)
+        if second_part:
+            yield AIMessageChunk(content=second_part)
 
 
 def make_tool_call(
@@ -113,6 +141,67 @@ def test_runtime_executes_product_tool_and_returns_final_reply() -> None:
     assert result.tool_rounds == 1
     assert result.tool_calls == 1
     assert len(model_client.calls) == 2
+
+
+def test_runtime_streams_direct_model_reply() -> None:
+    model_client = FakeModelClient([AIMessage(content="你好，我是智能客服。")])
+    runtime = CustomerServiceRuntime(model_client)
+
+    async def collect_events() -> list[RuntimeStreamEvent]:
+        events: list[RuntimeStreamEvent] = []
+        async for event in runtime.astream([HumanMessage(content="你是谁")]):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect_events())
+    delta_text = ""
+    for event in events:
+        if event.type == "delta":
+            delta_text += event.text
+
+    assert [event.type for event in events] == [
+        "model_start",
+        "delta",
+        "delta",
+        "complete",
+    ]
+    assert delta_text == "你好，我是智能客服。"
+    assert events[-1].result is not None
+    assert events[-1].result.model_calls == 1
+
+
+def test_runtime_streams_tool_progress_before_final_reply() -> None:
+    model_client = FakeModelClient(
+        [
+            AIMessage(content="", tool_calls=[make_tool_call()]),
+            AIMessage(content="推荐 AirBeat Pro，售价 299 元。"),
+        ]
+    )
+    runtime = CustomerServiceRuntime(model_client)
+
+    async def collect_events() -> list[RuntimeStreamEvent]:
+        events: list[RuntimeStreamEvent] = []
+        async for event in runtime.astream(
+            [HumanMessage(content="推荐三百元以内的耳机")]
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect_events())
+    event_types = [event.type for event in events]
+
+    assert event_types == [
+        "model_start",
+        "tool_start",
+        "tool_end",
+        "model_start",
+        "delta",
+        "delta",
+        "complete",
+    ]
+    assert events[-1].result is not None
+    assert events[-1].result.model_calls == 2
+    assert events[-1].result.tool_calls == 1
 
 
 def test_runtime_executes_multiple_tool_calls_in_one_round() -> None:
