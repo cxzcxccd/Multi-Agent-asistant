@@ -89,7 +89,8 @@ npm run format:check
 - 支持 OpenAI 和 OpenAI 兼容服务的模型客户端。
 - 使用 LangGraph 编排模型节点、商品工具节点和最终客服回复。
 - 会话、消息、聊天请求与响应的数据格式。
-- 90 项后端测试；会话接口、前端接入、MCP、RAG、订单和售后尚未实现。
+- 内存会话仓库和服务，支持买家隔离、历史消息转换、失败回滚和同会话串行处理。
+- 106 项后端测试；会话接口、前端接入、MCP、RAG、订单和售后尚未实现。
 
 ## 代码导览
 
@@ -119,6 +120,7 @@ backend/
   app/ai/runtime.py       LangGraph 客服运行图
   app/ai/tools/catalog.py AI 商品搜索与详情工具
   app/modules/catalog/    商品格式、仓库、服务和接口
+  app/modules/conversations/ 会话格式、内存仓库和 AI 聊天服务
   data/seed/products.json 后端模拟商品数据
   tests/                  后端自动化测试
 ```
@@ -135,5 +137,5 @@ backend/
 当前浏览器，不适用于真实客户数据。项目尚未建立真实 Agent 评测集，也没有完整的
 模型效果指标。
 
-下一阶段是实现内存会话仓库与服务和 `/api/chat`，再把买家聊天页接入真实
-LangGraph 客服运行时。
+下一阶段是提供 `/api/chat` 和会话查询接口，再把买家聊天页接入真实 LangGraph
+客服运行时。
