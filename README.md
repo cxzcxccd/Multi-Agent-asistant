@@ -4,7 +4,7 @@
 Demo，以及使用 FastAPI、LangChain、LangGraph、真实模型和模拟商品数据开发的
 第一阶段后端。
 
-前端商品咨询已经连接后端 `/api/chat` 和 LangGraph；订单、售后、人工接管及评测
+前端普通对话和商品咨询默认连接后端 `/api/chat` 和 LangGraph；订单、售后、人工接管及评测
 仍使用浏览器模拟数据和脚本。
 
 ## 本地运行
@@ -64,7 +64,7 @@ npm run format:check
 ```
 
 - `build`：TypeScript 检查和生产构建，输出到 `frontend/dist`。
-- `test`：Playwright 浏览器交互测试；默认使用已安装的 Google Chrome。测试会自动启动本地服务，或复用已经运行的 5173 端口服务。
+- `test`：Playwright 浏览器交互测试，使用已安装的 Google Chrome。脚本演示和后端聊天分别在 5174、5175 端口启动测试服务，避免干扰 5173 端口的开发页面。后端聊天测试拦截 HTTP 响应，不会消耗模型额度。
 - `format:check`：检查前端源码和配置格式。
 - `npm run test:report`：打开最近的测试报告。
 - `npm run preview`：预览构建产物，默认地址为 `http://127.0.0.1:4173`。
@@ -77,7 +77,7 @@ npm run format:check
 
 - React + TypeScript + Vite，使用 Tailwind CSS 构建集成及自定义工作台样式。
 - 12 个虚构商品、5 笔订单、2 位模拟买家，固定业务日期为 2026-09-15。
-- 商品咨询通过 FastAPI 调用真实 LangGraph 客服，并展示模型和工具调用统计。
+- 普通对话和商品咨询通过 FastAPI 调用真实 LangGraph 客服；“你是谁”“你好”和不含商品关键词的追问也会请求后端。
 - 订单、售后、人工工作台和评测仍由浏览器共享状态驱动，使用 localStorage 保存。
 - 先确认申请再提交，客服审批与买家确认分别呈现。批准不表示退款到账。
 - 人工接管、停止输出和切换买家会中断相应自动处理，防止迟到的自动回复。
@@ -117,6 +117,7 @@ frontend/
     styles.css           工作台主题与响应式布局
   tests/demo.spec.ts      浏览器交互回归测试
   tests/shop.spec.ts      商品陈列与客服往返流程测试
+  tests/backend-chat.spec.ts 普通对话、连续追问、错误重试、会话恢复和停止请求测试
 backend/
   README.md               后端进度、架构、全部文件职责和运行方式
   app/main.py             FastAPI 应用入口

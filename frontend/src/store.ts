@@ -327,7 +327,6 @@ export function reviewRequest(id: string, decision: 'approved' | 'rejected', rea
 interface Plan {
   module: string;
   text: string;
-  backend?: boolean;
   steps: Array<{ type: RunEvent['type']; name: string; label: string; result: string }>;
   products?: string[];
   orders?: string[];
@@ -492,7 +491,6 @@ function planReply(c: Conversation, text: string): Plan {
     if (wantsCompatibility && !deviceSupplied && !c.context.device)
       return {
         ...base,
-        backend: true,
         module: '商品服务',
         text: '为了核对兼容性，请告诉我设备的具体型号和接口信息。仅有 USB-C 接口，还不能确认支持视频输出或充电功率。',
         context: { category, productId: selected?.id, awaiting: 'device', intent: undefined },
@@ -500,7 +498,6 @@ function planReply(c: Conversation, text: string): Plan {
     if (state.fault === 'no-knowledge' || /资料.*没有|量子|卫星通信/.test(text))
       return {
         ...base,
-        backend: true,
         module: '商品服务',
         text: '当前资料中没有找到足够依据，我无法确认这个功能。可以换一个具体问题，或转人工进一步核实。',
         context: { awaiting: undefined, intent: undefined },
@@ -522,7 +519,6 @@ function planReply(c: Conversation, text: string): Plan {
           : '当前没有找到符合这些条件的商品。可以调整预算或商品类别。';
     return {
       ...base,
-      backend: true,
       module: '商品服务',
       text: textAnswer,
       products: filtered.map((p) => p.id),
@@ -565,18 +561,57 @@ function planReply(c: Conversation, text: string): Plan {
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+function isHandoffRequest(text: string): boolean {
+  // 只匹配明确的转人工请求，避免把“你是人工智能吗”当成人工接管。
+  const normalizedText = text.replace(/[，,。！!？?\s]/g, '');
+  const asksForStaff =
+    /^(?:请|麻烦|帮我|我要|我想|我需要)?(?:转|找|联系|接入|切换到)?(?:人工|真人)(?:客服|服务)?$/.test(
+      normalizedText,
+    );
+  const asksForTakeover = /^(?:请|麻烦|帮我)?客服接管$/.test(normalizedText);
+
+  return asksForStaff || asksForTakeover;
+}
+
+function isSimulatedBusinessRequest(conversation: Conversation, text: string): boolean {
+  // 只有尚未接入后端的业务走脚本，普通对话不需要命中商品关键词。
+  const mentionsOrder = /订单|物流|快递|发货|查单/.test(text);
+  const containsOrderNumber = /\b\d{5}\b/.test(text);
+  const requestsAfterSale = /退货|退款|售后|换货/.test(text);
+  const asksStorePolicy = /店铺.*规则|运费|发货政策/.test(text);
+
+  if (mentionsOrder || containsOrderNumber || requestsAfterSale || asksStorePolicy) {
+    return true;
+  }
+
+  // 售后草稿可以继续补充原因，但旧的待选订单状态不能拦截新的普通对话。
+  const waitingForReason = conversation.context.awaiting === 'reason';
+  const describesProblem =
+    /没声音|故障|损坏|坏了|不喜欢|不合适|断连|不能|无法|质量|破损|杂音|不充电/.test(text);
+  if (waitingForReason && describesProblem) {
+    return true;
+  }
+
+  const hasSelectedOrder = Boolean(conversation.context.orderId);
+  const asksDeliveryProgress = /到哪了|到哪里了|什么时候到/.test(text);
+  if (hasSelectedOrder && asksDeliveryProgress) {
+    return true;
+  }
+
+  return false;
+}
+
 interface BackendReplyInput {
   conversationId: string;
   text: string;
   token: string;
   runId: string;
   started: number;
-  plan: Plan;
   isLive: () => boolean;
 }
 
 async function sendBackendReply(input: BackendReplyInput) {
-  const { conversationId, text, token, runId, started, plan, isLive } = input;
+  const { conversationId, text, token, runId, started, isLive } = input;
   const conversation = getConversation(conversationId)!;
   const controller = new AbortController();
   backendRequests.set(conversationId, controller);
@@ -633,7 +668,8 @@ async function sendBackendReply(input: BackendReplyInput) {
       const run = s.runs.find((item) => item.id === runId)!;
       target.remoteId = response.conversation_id;
       target.mode = response.mode;
-      if (plan.context) Object.assign(target.context, plan.context);
+      // 真实对话的上下文由后端历史消息维护，不使用脚本猜测商品或预算。
+      target.context = {};
       addMessage(target, 'assistant', response.assistant_message.content, {
         id: response.assistant_message.id,
         time: response.assistant_message.created_at,
@@ -696,7 +732,7 @@ export async function sendMessage(conversationId: string, value: string) {
     if (target.title === '新的咨询') target.title = text.slice(0, 20);
   });
   if (c.mode !== 'ai') return;
-  if (/人工|真人|客服接管/.test(text)) {
+  if (isHandoffRequest(text)) {
     handoff(conversationId);
     return;
   }
@@ -712,11 +748,14 @@ export async function sendMessage(conversationId: string, value: string) {
       latest.runs.some((r) => r.id === runId && r.status === 'running')
     );
   };
-  const plan = planReply(getConversation(conversationId)!, text);
-  if (useBackendChat && plan.backend) {
-    await sendBackendReply({ conversationId, text, token, runId, started, plan, isLive });
+  const simulatedBusinessRequest = isSimulatedBusinessRequest(c, text);
+  const shouldCallBackend = useBackendChat && !simulatedBusinessRequest;
+  if (shouldCallBackend) {
+    await sendBackendReply({ conversationId, text, token, runId, started, isLive });
     return;
   }
+
+  const plan = planReply(getConversation(conversationId)!, text);
   update((s) => {
     s.runs.unshift({
       id: runId,
