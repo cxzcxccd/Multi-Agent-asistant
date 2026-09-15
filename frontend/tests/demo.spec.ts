@@ -182,6 +182,7 @@ test('资料不足与执行事件如实标识，不展示虚构答案', async ({
   await send(page, '了解 LinkHub 6 合 1 扩展坞');
   await expect(log(page).getByText(/没有找到足够依据/)).toBeVisible();
   await navigate(page, '开发者与评测');
+  await page.getByRole('tab', { name: '执行记录' }).click();
   await expect(page.getByText('Retrieval · search_knowledge', { exact: true })).toBeVisible();
   await expect(page.getByText('未检索到支持该问题的资料', { exact: true })).toBeVisible();
 });
@@ -195,6 +196,7 @@ test('停止和刷新中断的任务不会假装成功，可以重新查询', as
   await expect(log(page).getByTestId('order-10001')).toHaveCount(0);
   await page.getByRole('button', { name: '重新查询', exact: true }).click();
   await expect(log(page).getByTestId('order-10001')).toBeVisible();
+  await expect(page.getByRole('button', { name: '停止输出' })).toHaveCount(0);
 });
 
 test('评测为示例值，重置需确认且恢复初始数据', async ({ page }) => {

@@ -4,6 +4,17 @@ import type { BuyerId, Conversation, DemoState, Draft, Message, RunEvent } from 
 
 const KEY = 'geek-select-demo-v1';
 const uid = () => crypto.randomUUID();
+const tabId = (() => {
+  try {
+    const saved = sessionStorage.getItem('geek-select-tab-id');
+    if (saved) return saved;
+    const id = uid();
+    sessionStorage.setItem('geek-select-tab-id', id);
+    return id;
+  } catch {
+    return uid();
+  }
+})();
 const now = () => new Date().toISOString();
 const tokens = new Map<string, string>();
 const listeners = new Set<() => void>();
@@ -58,7 +69,7 @@ function recover(raw: string, interruptRunning = true): DemoState {
   )
     throw new Error('Invalid conversations');
   for (const run of saved.runs)
-    if (interruptRunning && run.status === 'running') {
+    if (interruptRunning && run.status === 'running' && (!run.ownerTab || run.ownerTab === tabId)) {
       run.status = 'stopped';
       run.events.forEach((e) => {
         if (e.status === 'running') e.status = 'stopped';
@@ -81,12 +92,27 @@ let state: DemoState;
 try {
   const saved = localStorage.getItem(KEY);
   state = saved ? recover(saved) : initial();
+  if (saved && JSON.stringify(state) !== saved) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(state));
+    } catch {
+      state.storageWarning = '浏览器存储不可用，恢复状态未能保存。';
+    }
+  }
 } catch {
   state = initial();
   state.storageWarning = '未能读取浏览器记录，已载入初始演示数据。';
 }
+function latestState(): DemoState {
+  try {
+    const raw = localStorage.getItem(KEY);
+    return raw ? recover(raw, false) : state;
+  } catch {
+    return state;
+  }
+}
 function update(fn: (draft: DemoState) => void) {
-  const next = structuredClone(state);
+  const next = structuredClone(latestState());
   fn(next);
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
@@ -99,7 +125,8 @@ function update(fn: (draft: DemoState) => void) {
 window.addEventListener('storage', (e) => {
   if (e.key !== KEY || !e.newValue) return;
   try {
-    state = recover(e.newValue, false);
+    // A queued storage event may describe an older write than our own last action.
+    state = latestState();
     for (const id of tokens.keys()) {
       if (
         getConversation(id)?.mode !== 'ai' ||
@@ -156,11 +183,12 @@ export function switchBuyer(buyer: BuyerId) {
 }
 export function newConversation() {
   cancelRun(state.active[state.buyer]);
+  const c = createConversation(state.buyer);
   update((s) => {
-    const c = createConversation(s.buyer);
     s.conversations.unshift(c);
     s.active[s.buyer] = c.id;
   });
+  return c.id;
 }
 export function selectConversation(id: string) {
   if (getConversation(id)?.buyer === state.buyer)
@@ -549,12 +577,19 @@ export async function sendMessage(conversationId: string, value: string) {
     runId = uid(),
     started = performance.now();
   tokens.set(conversationId, token);
-  const isLive = () =>
-    tokens.get(conversationId) === token && getConversation(conversationId)?.mode === 'ai';
+  const isLive = () => {
+    const latest = latestState();
+    return (
+      tokens.get(conversationId) === token &&
+      latest.conversations.find((c) => c.id === conversationId)?.mode === 'ai' &&
+      latest.runs.some((r) => r.id === runId && r.status === 'running')
+    );
+  };
   const plan = planReply(getConversation(conversationId)!, text);
   update((s) => {
     s.runs.unshift({
       id: runId,
+      ownerTab: tabId,
       conversationId,
       query: text,
       module: plan.module,

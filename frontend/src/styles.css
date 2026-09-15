@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './shop.css';
 
 :root {
   font-family: Inter, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;

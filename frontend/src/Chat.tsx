@@ -38,15 +38,17 @@ import type { Conversation, Message } from './types';
 export function MessageFeed({
   conversation,
   staffView = false,
+  active = true,
 }: {
   conversation: Conversation;
   staffView?: boolean;
+  active?: boolean;
 }) {
   const s = useDemo(),
     scroll = useRef<HTMLDivElement>(null);
   const last = conversation.messages.at(-1);
   useEffect(() => {
-    if (scroll.current)
+    if (active && scroll.current)
       scroll.current.scrollTop =
         conversation.messages.length === 1 ? 0 : scroll.current.scrollHeight;
   }, [
@@ -56,6 +58,7 @@ export function MessageFeed({
     last?.streaming,
     conversation.draft,
     s.requests,
+    active,
   ]);
   const send = (text: string) => {
     if (!staffView) void sendMessage(conversation.id, text);
@@ -236,7 +239,7 @@ function MessageBubble({
     </article>
   );
 }
-export default function Chat() {
+export default function Chat({ active = true }: { active?: boolean }) {
   const s = useDemo(),
     c = currentConversation(s),
     [input, setInput] = useState(''),
@@ -285,7 +288,7 @@ export default function Chat() {
             <PackageSearch size={21} />
           </button>
         </div>
-        <MessageFeed conversation={c} />
+        <MessageFeed conversation={c} active={active} />
         {c.mode === 'waiting' || c.mode === 'human' ? (
           <div className="service-banner">
             <Headphones size={16} />

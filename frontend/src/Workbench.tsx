@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowUp,
   Check,
@@ -18,13 +18,26 @@ import { MessageFeed } from './Chat';
 import type { AfterSale } from './types';
 
 const modes = { ai: 'AI 服务中', waiting: '待人工接管', human: '人工服务中', closed: '已结束' };
-export default function Workbench() {
+export default function Workbench({
+  active = true,
+  productQuote,
+}: {
+  active?: boolean;
+  productQuote?: { id: string; text: string };
+}) {
   const s = useDemo(),
     [tab, setTab] = useState<'conversations' | 'approvals'>('conversations');
   const [selected, setSelected] = useState(s.active[s.buyer]);
   const [filter, setFilter] = useState('all'),
     [reply, setReply] = useState('');
   const c = s.conversations.find((c) => c.id === selected) || s.conversations[0];
+  const lastQuote = useRef<string>(undefined);
+  useEffect(() => {
+    if (!productQuote || lastQuote.current === productQuote.id) return;
+    lastQuote.current = productQuote.id;
+    setTab('conversations');
+    setReply((previous) => `${previous}${previous ? '\n' : ''}${productQuote.text}`);
+  }, [productQuote]);
   const waiting = s.conversations.filter((c) => c.mode === 'waiting').length;
   const pending = s.requests.filter((r) => r.status === 'pending').length;
   const filtered = s.conversations.filter((c) => filter === 'all' || c.mode === filter);
@@ -199,7 +212,7 @@ export default function Workbench() {
                     : '会话与已完成查询记录可在下方查看'}
               </span>
             </div>
-            <MessageFeed conversation={c} staffView />
+            <MessageFeed conversation={c} staffView active={active} />
             <form
               className="staff-composer"
               onSubmit={(e) => {

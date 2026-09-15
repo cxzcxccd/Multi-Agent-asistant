@@ -12,17 +12,25 @@ import {
   ShoppingBag,
   Sparkles,
 } from 'lucide-react';
-import { buyers, DEMO_DATE } from './data';
-import { newConversation, selectConversation, switchBuyer, useDemo } from './store';
+import { buyers, DEMO_DATE, findProduct, money } from './data';
+import {
+  currentConversation,
+  newConversation,
+  selectConversation,
+  sendMessage,
+  switchBuyer,
+  useDemo,
+} from './store';
 import { Badge } from './components';
 import Chat from './Chat';
 import Workbench from './Workbench';
 import Lab from './Lab';
+import Shop from './Shop';
 import type { BuyerId, View } from './types';
 
 const readView = (): View => {
   const hash = location.hash.slice(1);
-  return hash === 'workbench' || hash === 'lab' ? hash : 'chat';
+  return hash === 'workbench' || hash === 'lab' || hash === 'shop' ? hash : 'chat';
 };
 const views = [
   { id: 'chat' as const, name: '买家客服', subtitle: '和小极聊聊', icon: MessageSquare },
@@ -33,17 +41,46 @@ export default function App() {
   const s = useDemo(),
     [view, setView] = useState<View>(readView),
     [navOpen, setNavOpen] = useState(false);
+  const [shopOrigin, setShopOrigin] = useState<Exclude<View, 'shop'>>('chat');
+  const [productQuote, setProductQuote] = useState<{ id: string; text: string }>();
+  const [visited, setVisited] = useState<View[]>(() => [readView()]);
+  const markVisited = (next: View) =>
+    setVisited((previous) => (previous.includes(next) ? previous : [...previous, next]));
   useEffect(() => {
-    const handle = () => setView(readView());
+    const handle = () => {
+      const next = readView();
+      setView(next);
+      markVisited(next);
+    };
     window.addEventListener('hashchange', handle);
     return () => window.removeEventListener('hashchange', handle);
   }, []);
   const navigate = (next: View) => {
+    markVisited(next);
     location.hash = next;
     setView(next);
     setNavOpen(false);
   };
-  const current = views.find((v) => v.id === view)!;
+  const current = view === 'shop' ? { name: '数码旗舰店' } : views.find((v) => v.id === view)!;
+  const openShop = () => {
+    if (view !== 'shop') setShopOrigin(view);
+    navigate('shop');
+  };
+  const productAction = (id: string) => {
+    const product = findProduct(id);
+    if (shopOrigin === 'workbench') {
+      setProductQuote({
+        id: crypto.randomUUID(),
+        text: `${product.name}（商品 ${product.id}）：${money(product.price)}，${product.specs.join('、')}。${product.stock ? `当前演示库存 ${product.stock} 件。` : '当前暂时缺货。'}`,
+      });
+      navigate('workbench');
+    } else {
+      const c = currentConversation(s);
+      const conversationId = c.mode === 'closed' ? newConversation() : c.id;
+      navigate('chat');
+      void sendMessage(conversationId, `了解 ${product.name}`);
+    }
+  };
   const pending =
     s.requests.filter((r) => r.status === 'pending').length +
     s.conversations.filter((c) => c.mode === 'waiting').length;
@@ -76,16 +113,22 @@ export default function App() {
         >
           <PanelLeftClose size={20} />
         </button>
-        <div className="store-switch">
+        <button
+          className={`store-switch ${view === 'shop' ? 'store-active' : ''}`}
+          onClick={openShop}
+          aria-label="浏览数码旗舰店"
+          aria-current={view === 'shop' ? 'page' : undefined}
+        >
           <span className="store-icon">
             <ShoppingBag size={18} />
           </span>
           <div>
             <strong>数码旗舰店</strong>
-            <span>独立网页体验</span>
+            <span>浏览全部商品</span>
           </div>
           <Badge>DEMO</Badge>
-        </div>
+          <ArrowUpRight size={14} />
+        </button>
         <span className="nav-label">工作空间</span>
         <nav aria-label="主导航">
           {views.map((v) => (
@@ -176,7 +219,7 @@ export default function App() {
               模拟数据
             </Badge>
             <span className="header-divider" />
-            {view === 'chat' ? (
+            {view === 'chat' || (view === 'shop' && shopOrigin !== 'workbench') ? (
               <label className="buyer-switch">
                 <span className="header-avatar">{buyers[s.buyer][0]}</span>
                 <select
@@ -191,7 +234,9 @@ export default function App() {
               </label>
             ) : (
               <span className="header-role">
-                {view === 'workbench' ? '客服小周 · 模拟客服' : '开发者视图'}
+                {view === 'workbench' || (view === 'shop' && shopOrigin === 'workbench')
+                  ? '客服小周 · 模拟客服'
+                  : '开发者视图'}
               </span>
             )}
           </div>
@@ -202,7 +247,26 @@ export default function App() {
           </div>
         )}
         <main id="main-content" className={`main-content view-${view}`}>
-          {view === 'chat' ? <Chat /> : view === 'workbench' ? <Workbench /> : <Lab />}
+          <div className="route-pane" hidden={view !== 'chat'}>
+            {visited.includes('chat') && <Chat active={view === 'chat'} />}
+          </div>
+          <div className="route-pane" hidden={view !== 'workbench'}>
+            {visited.includes('workbench') && (
+              <Workbench active={view === 'workbench'} productQuote={productQuote} />
+            )}
+          </div>
+          <div className="route-pane" hidden={view !== 'lab'}>
+            {visited.includes('lab') && <Lab />}
+          </div>
+          <div className="route-pane" hidden={view !== 'shop'}>
+            {visited.includes('shop') && (
+              <Shop
+                origin={shopOrigin}
+                onBack={() => navigate(shopOrigin)}
+                onProductAction={productAction}
+              />
+            )}
+          </div>
         </main>
         <footer className="app-footer">
           <span>

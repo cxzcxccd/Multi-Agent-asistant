@@ -1,5 +1,5 @@
 export type BuyerId = 'A' | 'B';
-export type View = 'chat' | 'workbench' | 'lab';
+export type View = 'chat' | 'workbench' | 'lab' | 'shop';
 export type Category = '耳机' | '充电器' | '扩展坞';
 export interface Product {
   id: string;
@@ -85,6 +85,7 @@ export interface RunEvent {
 }
 export interface Run {
   id: string;
+  ownerTab?: string;
   conversationId: string;
   query: string;
   module: string;
