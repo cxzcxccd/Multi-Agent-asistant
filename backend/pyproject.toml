@@ -1,0 +1,21 @@
+[project]
+name = "geek-select-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Geek Select AI commerce assistant"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "pydantic-settings",
+  "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+  "httpx",
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
