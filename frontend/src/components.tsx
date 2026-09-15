@@ -410,7 +410,9 @@ export function LatestRun({ conversationId }: { conversationId: string }) {
         </Badge>
       </div>
       <RunTrace run={run} />
-      <p className="tiny muted">脚本模拟执行 · 非真实 Agent 调用</p>
+      <p className="tiny muted">
+        {run.origin === 'backend' ? '后端 LangGraph 真实执行' : '脚本模拟执行 · 非真实 Agent 调用'}
+      </p>
     </>
   );
 }

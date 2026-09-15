@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { buyers, findProduct, orders, quickQuestions } from './data';
 import {
+  backendChatEnabled,
   cancelRun,
   currentConversation,
   handoff,
@@ -187,7 +188,15 @@ function MessageBubble({
           <strong>
             {user ? buyers[c.buyer] : m.role === 'staff' ? '小周 · 人工客服' : '小极 · 购物助手'}
           </strong>
-          {!user && <span className="tiny">{m.role === 'staff' ? '人工服务' : '模拟 AI'}</span>}
+          {!user && (
+            <span className="tiny">
+              {m.role === 'staff'
+                ? '人工服务'
+                : m.origin === 'backend'
+                  ? 'LangGraph AI'
+                  : '模拟 AI'}
+            </span>
+          )}
           <time>{timeLabel(m.time)}</time>
         </div>
         <div className={`message-text ${m.streaming ? 'streaming' : ''}`}>{m.text}</div>
@@ -376,7 +385,9 @@ export default function Chat({ active = true }: { active?: boolean }) {
           )}
           <p className="composer-disclaimer">
             <ShieldCheck size={12} />
-            交互演示 · 回答由预设脚本生成 · 未连接真实大模型
+            {backendChatEnabled
+              ? '商品咨询连接 LangGraph AI · 订单和售后仍使用模拟数据'
+              : '交互演示 · 回答由预设脚本生成'}
           </p>
         </div>
       </section>
@@ -434,7 +445,11 @@ export default function Chat({ active = true }: { active?: boolean }) {
         <div className="context-section execution-section">
           <div className="section-label">
             <h3>处理进度</h3>
-            <Badge>模拟执行</Badge>
+            <Badge>
+              {s.runs.find((run) => run.conversationId === c.id)?.origin === 'backend'
+                ? '真实执行'
+                : '模拟执行'}
+            </Badge>
           </div>
           <LatestRun conversationId={c.id} />
         </div>

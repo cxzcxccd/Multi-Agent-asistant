@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { Badge, Modal, ProductCard, RunTrace } from './components';
 import { DEMO_DATE, policies, products } from './data';
-import { resetDemo, setFault, useDemo } from './store';
+import { backendChatEnabled, resetDemo, setFault, useDemo } from './store';
 
 export default function Lab() {
   const s = useDemo(),
@@ -31,7 +31,7 @@ export default function Lab() {
         <div>
           <span className="eyebrow">OBSERVABILITY LAB</span>
           <h1>看得见过程，才能改进结果。</h1>
-          <p>查看模拟执行事件，预览未来的评测工作流。</p>
+          <p>查看 LangGraph 与模拟业务的执行事件，预览未来的评测工作流。</p>
         </div>
         <Badge tone="amber">
           <FlaskConical size={14} />
@@ -40,7 +40,11 @@ export default function Lab() {
       </div>
       <div className="lab-banner">
         <Code2 size={19} />
-        <span>当前没有连接模型、LangGraph 或 MCP。执行轨迹来自演示脚本，评测分数为示例值。</span>
+        <span>
+          {backendChatEnabled
+            ? '商品咨询已经连接模型和 LangGraph；订单与售后轨迹仍来自演示脚本，评测分数为示例值。'
+            : '当前使用完整脚本模式；执行轨迹来自演示脚本，评测分数为示例值。'}
+        </span>
       </div>
       <div className="tab-bar" role="tablist" aria-label="开发者功能">
         {[
@@ -93,7 +97,8 @@ export default function Lab() {
                   </div>
                   <strong>{r.query}</strong>
                   <span className="tiny muted">
-                    {r.module} · 脚本执行 <ChevronRight size={13} />
+                    {r.module} · {r.origin === 'backend' ? 'LangGraph 执行' : '脚本执行'}{' '}
+                    <ChevronRight size={13} />
                   </span>
                 </button>
               ))

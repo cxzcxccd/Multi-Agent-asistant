@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_name: str = "极客优选智能客服"
     app_env: str = "development"
     app_debug: bool = False
+    cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     model_provider: str = "openai"
     model_name: str = ""
     model_api_key: SecretStr | None = None

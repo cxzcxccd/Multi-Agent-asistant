@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { ChatApiError, sendChatMessage } from './api';
 import { buyers, findOrder, findProduct, orders, policies, products } from './data';
 import type { BuyerId, Conversation, DemoState, Draft, Message, RunEvent } from './types';
 
@@ -17,6 +18,9 @@ const tabId = (() => {
 })();
 const now = () => new Date().toISOString();
 const tokens = new Map<string, string>();
+const backendRequests = new Map<string, AbortController>();
+const useBackendChat = import.meta.env.VITE_CHAT_MODE !== 'script';
+export const backendChatEnabled = useBackendChat;
 const listeners = new Set<() => void>();
 const welcome = (): Message => ({
   id: uid(),
@@ -158,6 +162,8 @@ const addMessage = (
 ) => c.messages.push({ id: uid(), role, text, time: now(), ...extra });
 
 export function cancelRun(conversationId: string) {
+  backendRequests.get(conversationId)?.abort();
+  backendRequests.delete(conversationId);
   tokens.delete(conversationId);
   update((s) => {
     s.runs
@@ -197,6 +203,8 @@ export function selectConversation(id: string) {
     });
 }
 export function resetDemo() {
+  backendRequests.forEach((request) => request.abort());
+  backendRequests.clear();
   tokens.clear();
   const fresh = initial();
   update((s) => Object.assign(s, fresh, { storageWarning: undefined }));
@@ -318,6 +326,7 @@ export function reviewRequest(id: string, decision: 'approved' | 'rejected', rea
 interface Plan {
   module: string;
   text: string;
+  backend?: boolean;
   steps: Array<{ type: RunEvent['type']; name: string; label: string; result: string }>;
   products?: string[];
   orders?: string[];
@@ -482,6 +491,7 @@ function planReply(c: Conversation, text: string): Plan {
     if (wantsCompatibility && !deviceSupplied && !c.context.device)
       return {
         ...base,
+        backend: true,
         module: '商品服务',
         text: '为了核对兼容性，请告诉我设备的具体型号和接口信息。仅有 USB-C 接口，还不能确认支持视频输出或充电功率。',
         context: { category, productId: selected?.id, awaiting: 'device', intent: undefined },
@@ -489,6 +499,7 @@ function planReply(c: Conversation, text: string): Plan {
     if (state.fault === 'no-knowledge' || /资料.*没有|量子|卫星通信/.test(text))
       return {
         ...base,
+        backend: true,
         module: '商品服务',
         text: '当前资料中没有找到足够依据，我无法确认这个功能。可以换一个具体问题，或转人工进一步核实。',
         context: { awaiting: undefined, intent: undefined },
@@ -510,6 +521,7 @@ function planReply(c: Conversation, text: string): Plan {
           : '当前没有找到符合这些条件的商品。可以调整预算或商品类别。';
     return {
       ...base,
+      backend: true,
       module: '商品服务',
       text: textAnswer,
       products: filtered.map((p) => p.id),
@@ -551,6 +563,104 @@ function planReply(c: Conversation, text: string): Plan {
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+interface BackendReplyInput {
+  conversationId: string;
+  text: string;
+  token: string;
+  runId: string;
+  started: number;
+  plan: Plan;
+  isLive: () => boolean;
+}
+
+async function sendBackendReply(input: BackendReplyInput) {
+  const { conversationId, text, token, runId, started, plan, isLive } = input;
+  const conversation = getConversation(conversationId)!;
+  const controller = new AbortController();
+  backendRequests.set(conversationId, controller);
+
+  update((s) => {
+    s.runs.unshift({
+      id: runId,
+      ownerTab: tabId,
+      conversationId,
+      query: text,
+      module: 'AI 商品客服',
+      origin: 'backend',
+      status: 'running',
+      startedAt: now(),
+      events: [
+        {
+          id: uid(),
+          type: 'Agent',
+          name: 'customer_service_graph',
+          label: 'LangGraph 正在处理商品咨询',
+          status: 'running',
+        },
+      ],
+    });
+  });
+
+  try {
+    const response = await sendChatMessage(
+      conversation.buyer,
+      text,
+      conversation.remoteId,
+      controller.signal,
+    );
+    if (!isLive()) return;
+
+    update((s) => {
+      const target = s.conversations.find((item) => item.id === conversationId)!;
+      const run = s.runs.find((item) => item.id === runId)!;
+      target.remoteId = response.conversation_id;
+      target.mode = response.mode;
+      if (plan.context) Object.assign(target.context, plan.context);
+      addMessage(target, 'assistant', response.assistant_message.content, {
+        id: response.assistant_message.id,
+        time: response.assistant_message.created_at,
+        origin: 'backend',
+      });
+      run.status = 'success';
+      run.duration = Math.round(performance.now() - started);
+      Object.assign(run.events[0], {
+        status: 'success',
+        duration: run.duration,
+        result: `模型调用 ${response.run.model_calls} 次，工具调用 ${response.run.tool_calls} 次`,
+      });
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
+    if (!isLive()) return;
+
+    const message =
+      error instanceof ChatApiError
+        ? error.message
+        : '无法连接 AI 客服后端，请确认 FastAPI 服务已经启动。';
+    update((s) => {
+      const target = s.conversations.find((item) => item.id === conversationId)!;
+      const run = s.runs.find((item) => item.id === runId)!;
+      run.status = 'error';
+      run.duration = Math.round(performance.now() - started);
+      Object.assign(run.events[0], {
+        status: 'error',
+        duration: run.duration,
+        result: message,
+      });
+      addMessage(target, 'assistant', message, {
+        retryText: text,
+        origin: 'backend',
+      });
+    });
+  } finally {
+    if (backendRequests.get(conversationId) === controller) {
+      backendRequests.delete(conversationId);
+    }
+    if (tokens.get(conversationId) === token) tokens.delete(conversationId);
+  }
+}
+
 export async function sendMessage(conversationId: string, value: string) {
   const text = value.trim().slice(0, 1000),
     c = getConversation(conversationId);
@@ -586,6 +696,10 @@ export async function sendMessage(conversationId: string, value: string) {
     );
   };
   const plan = planReply(getConversation(conversationId)!, text);
+  if (useBackendChat && plan.backend) {
+    await sendBackendReply({ conversationId, text, token, runId, started, plan, isLive });
+    return;
+  }
   update((s) => {
     s.runs.unshift({
       id: runId,
@@ -593,6 +707,7 @@ export async function sendMessage(conversationId: string, value: string) {
       conversationId,
       query: text,
       module: plan.module,
+      origin: 'script',
       status: 'running',
       startedAt: now(),
       events: [],

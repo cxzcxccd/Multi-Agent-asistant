@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { buyers, DEMO_DATE, findProduct, money } from './data';
 import {
+  backendChatEnabled,
   currentConversation,
   newConversation,
   selectConversation,
@@ -273,7 +274,11 @@ export default function App() {
             <span className="status-dot online" />
             本地演示运行中
           </span>
-          <span>业务数据模拟 · AI 行为脚本驱动</span>
+          <span>
+            {backendChatEnabled
+              ? '商品咨询由 LangGraph 驱动 · 订单与售后数据模拟'
+              : '业务数据模拟 · AI 行为脚本驱动'}
+          </span>
         </footer>
       </div>
     </div>

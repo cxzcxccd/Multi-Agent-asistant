@@ -41,9 +41,11 @@ export interface Message {
   requestId?: string;
   retryText?: string;
   streaming?: boolean;
+  origin?: 'backend' | 'script';
 }
 export interface Conversation {
   id: string;
+  remoteId?: string;
   buyer: BuyerId;
   title: string;
   createdAt: string;
@@ -89,6 +91,7 @@ export interface Run {
   conversationId: string;
   query: string;
   module: string;
+  origin?: 'backend' | 'script';
   status: 'running' | 'success' | 'error' | 'stopped';
   startedAt: string;
   duration?: number;
