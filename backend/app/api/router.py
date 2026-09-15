@@ -3,9 +3,11 @@
 from fastapi import APIRouter
 
 from app.modules.catalog.router import router as catalog_router
+from app.modules.conversations.router import router as conversation_router
 
 api_router = APIRouter()
 api_router.include_router(catalog_router)
+api_router.include_router(conversation_router)
 
 
 @api_router.get("/health", tags=["system"])
