@@ -25,9 +25,12 @@ export interface ChatResponse {
 }
 
 export class ChatApiError extends Error {
-  constructor(message: string) {
+  status: number;
+
+  constructor(message: string, status: number) {
     super(message);
     this.name = 'ChatApiError';
+    this.status = status;
   }
 }
 
@@ -50,7 +53,8 @@ export async function sendChatMessage(
 
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new ChatApiError(body?.detail || `客服接口请求失败（${response.status}）`);
+    const message = body?.detail || `客服接口请求失败（${response.status}）`;
+    throw new ChatApiError(message, response.status);
   }
 
   return (await response.json()) as ChatResponse;

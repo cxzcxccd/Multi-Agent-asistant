@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ChatApiError, sendChatMessage } from './api';
+import type { ChatResponse } from './api';
 import { buyers, findOrder, findProduct, orders, policies, products } from './data';
 import type { BuyerId, Conversation, DemoState, Draft, Message, RunEvent } from './types';
 
@@ -603,12 +604,28 @@ async function sendBackendReply(input: BackendReplyInput) {
   });
 
   try {
-    const response = await sendChatMessage(
-      conversation.buyer,
-      text,
-      conversation.remoteId,
-      controller.signal,
-    );
+    let response: ChatResponse;
+
+    try {
+      response = await sendChatMessage(
+        conversation.buyer,
+        text,
+        conversation.remoteId,
+        controller.signal,
+      );
+    } catch (error) {
+      const remoteConversationExpired =
+        error instanceof ChatApiError && error.status === 404 && Boolean(conversation.remoteId);
+
+      if (!remoteConversationExpired) throw error;
+
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId);
+        if (target) delete target.remoteId;
+      });
+      response = await sendChatMessage(conversation.buyer, text, undefined, controller.signal);
+    }
+
     if (!isLive()) return;
 
     update((s) => {
