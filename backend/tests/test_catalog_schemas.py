@@ -67,6 +67,12 @@ def test_search_params_validate_and_normalize_filters() -> None:
     assert params.limit == 20
 
 
+def test_search_params_use_storefront_default_sort() -> None:
+    params = ProductSearchParams()
+
+    assert params.sort == "default"
+
+
 def test_search_params_reject_an_inverted_price_range() -> None:
     with pytest.raises(ValidationError, match="min_price cannot be greater"):
         ProductSearchParams(min_price=300, max_price=100)

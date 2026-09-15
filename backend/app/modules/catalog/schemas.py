@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 ProductId = Annotated[str, StringConstraints(pattern=r"^p\d{2}$")]
-ProductSort = Literal["featured", "price-asc", "price-desc"]
+ProductSort = Literal["default", "price-asc", "price-desc"]
 
 
 class ProductCategory(StrEnum):
@@ -45,7 +45,7 @@ class ProductSearchParams(BaseModel):
     min_price: int | None = Field(default=None, ge=0)
     max_price: int | None = Field(default=None, ge=0)
     in_stock: bool = False
-    sort: ProductSort = "featured"
+    sort: ProductSort = "default"
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=50)
 
