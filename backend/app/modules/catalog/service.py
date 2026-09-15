@@ -1,1 +1,1 @@
-"""Product search, pricing, stock, and detail business rules."""
+"""商品搜索、价格、库存和详情业务规则。"""

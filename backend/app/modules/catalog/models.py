@@ -1,1 +1,1 @@
-"""Product persistence models reserved for the database phase."""
+"""为数据库阶段预留的商品持久化模型。"""

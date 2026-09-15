@@ -1,1 +1,1 @@
-"""Shared Server-Sent Events contracts for future AI streaming responses."""
+"""为后续 AI 流式回复预留的服务器发送事件公共协议。"""

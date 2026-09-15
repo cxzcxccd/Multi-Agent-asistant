@@ -1,1 +1,1 @@
-"""Model-provider boundary for the future real LLM integration."""
+"""为后续接入真实大模型预留的模型服务边界。"""

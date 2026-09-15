@@ -1,1 +1,1 @@
-"""Conversation and message request and response schemas."""
+"""会话与消息的请求和响应数据格式。"""

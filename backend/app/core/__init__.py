@@ -1,1 +1,1 @@
-"""Application configuration and shared infrastructure."""
+"""应用配置与公共基础设施。"""

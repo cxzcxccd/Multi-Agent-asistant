@@ -1,4 +1,4 @@
-"""Environment-backed application settings."""
+"""从环境变量读取应用配置。"""
 
 from functools import lru_cache
 

@@ -1,1 +1,1 @@
-"""Tools available to the AI customer-service runtime."""
+"""AI 客服运行时可调用的工具。"""

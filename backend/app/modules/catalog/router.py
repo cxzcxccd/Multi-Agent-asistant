@@ -1,1 +1,1 @@
-"""FastAPI routes for browsing and searching products."""
+"""用于浏览和搜索商品的 FastAPI 路由。"""

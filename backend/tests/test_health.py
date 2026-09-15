@@ -1,4 +1,4 @@
-"""Smoke test for the FastAPI application scaffold."""
+"""FastAPI 应用骨架的冒烟测试。"""
 
 import asyncio
 

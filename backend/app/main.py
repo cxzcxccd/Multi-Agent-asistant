@@ -1,4 +1,4 @@
-"""FastAPI application entry point."""
+"""FastAPI 应用入口。"""
 
 from fastapi import FastAPI
 

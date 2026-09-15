@@ -1,1 +1,1 @@
-"""Conversation persistence models reserved for the database phase."""
+"""为数据库阶段预留的会话持久化模型。"""

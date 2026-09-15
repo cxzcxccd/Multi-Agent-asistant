@@ -1,1 +1,1 @@
-"""Conversation data access boundary."""
+"""会话数据访问边界。"""

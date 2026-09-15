@@ -1,4 +1,4 @@
-"""Root API router."""
+"""API 总路由。"""
 
 from fastapi import APIRouter
 

@@ -1,1 +1,1 @@
-"""Commerce business modules."""
+"""电商业务模块。"""

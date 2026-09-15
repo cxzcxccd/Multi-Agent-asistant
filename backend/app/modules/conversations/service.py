@@ -1,1 +1,1 @@
-"""Conversation lifecycle and message business rules."""
+"""会话生命周期与消息业务规则。"""

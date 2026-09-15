@@ -1,1 +1,1 @@
-"""Product catalog module."""
+"""商品目录模块。"""

@@ -1,1 +1,1 @@
-"""Product data access boundary."""
+"""商品数据访问边界。"""

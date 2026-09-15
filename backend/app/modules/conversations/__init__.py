@@ -1,1 +1,1 @@
-"""Customer-service conversation module."""
+"""客服会话模块。"""

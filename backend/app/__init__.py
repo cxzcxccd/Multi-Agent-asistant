@@ -1,1 +1,1 @@
-"""Geek Select backend application package."""
+"""极客优选后端应用包。"""

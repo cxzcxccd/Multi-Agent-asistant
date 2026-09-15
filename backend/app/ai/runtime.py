@@ -1,1 +1,1 @@
-"""AI run lifecycle, cancellation, retries, and streaming boundary."""
+"""AI 执行生命周期、取消、重试与流式输出边界。"""

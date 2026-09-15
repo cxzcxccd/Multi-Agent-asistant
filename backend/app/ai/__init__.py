@@ -1,1 +1,1 @@
-"""AI customer-service orchestration package."""
+"""AI 客服编排包。"""

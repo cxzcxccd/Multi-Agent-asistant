@@ -1,4 +1,4 @@
-"""Validated request and response schemas for the product catalog."""
+"""商品目录的请求与响应数据格式。"""
 
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -11,7 +11,7 @@ ProductSort = Literal["featured", "price-asc", "price-desc"]
 
 
 class ProductCategory(StrEnum):
-    """Categories currently displayed by the digital storefront."""
+    """数码旗舰店当前展示的商品分类。"""
 
     HEADPHONES = "耳机"
     CHARGERS = "充电器"
@@ -19,7 +19,7 @@ class ProductCategory(StrEnum):
 
 
 class Product(BaseModel):
-    """A product record shared by the storefront and the AI catalog tools."""
+    """由商品页面和 AI 商品工具共用的商品记录。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -27,8 +27,8 @@ class Product(BaseModel):
     name: NonBlankText
     category: ProductCategory
     series: NonBlankText
-    price: int = Field(ge=0, description="Current demo price in CNY yuan")
-    stock: int = Field(ge=0, description="Current demo stock quantity")
+    price: int = Field(ge=0, description="当前演示价格，单位为人民币元")
+    stock: int = Field(ge=0, description="当前演示库存数量")
     specs: list[NonBlankText] = Field(min_length=1)
     description: NonBlankText
     color: NonBlankText
@@ -36,7 +36,7 @@ class Product(BaseModel):
 
 
 class ProductSearchParams(BaseModel):
-    """Validated filters accepted by product search services and routes."""
+    """商品搜索服务和接口接受的筛选条件。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -61,7 +61,7 @@ class ProductSearchParams(BaseModel):
 
 
 class ProductListResponse(BaseModel):
-    """A page of products and the number of matches before pagination."""
+    """一页商品以及分页前的匹配商品总数。"""
 
     model_config = ConfigDict(extra="forbid")
 

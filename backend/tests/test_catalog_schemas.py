@@ -1,4 +1,4 @@
-"""Validation tests for product catalog contracts."""
+"""商品目录数据契约的校验测试。"""
 
 import json
 from pathlib import Path

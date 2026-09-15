@@ -1,1 +1,1 @@
-"""AI tool boundary for product search and product details."""
+"""商品搜索与商品详情的 AI 工具边界。"""
