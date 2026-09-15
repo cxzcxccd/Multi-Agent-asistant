@@ -82,6 +82,10 @@ def make_settings(**overrides: Any) -> Settings:
         "model_provider": "openai",
         "model_name": "test-model",
         "model_api_key": SecretStr("test-secret"),
+        "model_base_url": "",
+        "model_temperature": 0.1,
+        "model_timeout_seconds": 30,
+        "model_max_retries": 2,
     }
     values.update(overrides)
     return Settings(**values)

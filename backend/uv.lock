@@ -224,6 +224,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "langchain" },
     { name = "langchain-openai" },
+    { name = "langgraph" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -239,6 +240,7 @@ requires-dist = [
     { name = "fastapi" },
     { name = "langchain" },
     { name = "langchain-openai" },
+    { name = "langgraph" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extras = ["standard"] },
 ]

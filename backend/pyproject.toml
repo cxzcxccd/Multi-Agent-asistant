@@ -8,6 +8,7 @@ dependencies = [
   "fastapi",
   "langchain",
   "langchain-openai",
+  "langgraph",
   "pydantic-settings",
   "uvicorn[standard]",
 ]
