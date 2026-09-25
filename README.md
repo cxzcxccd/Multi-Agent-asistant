@@ -110,6 +110,7 @@ npm run format:check
 - Markdown 知识库、Milvus 增量向量索引和 `search_knowledge` 混合检索工具已接入 LangGraph，回复会展示真实文档与章节来源。
 - RAG 默认使用本地 BGE 中文语义向量，同时保留离线特征哈希测试实现和 OpenAI Embedding Provider；评测覆盖 Recall@K、MRR、拒答率、检索延迟、回答正确性、忠实度、完整性和引用准确率。
 - 客服可在“开发者与评测”页面运行真实检索评测并查看每条案例的召回来源与通过状态。
+- RAG评测支持同集比较关键词、BGE+Milvus向量、加权混合和BGE重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
 - 165 项后端测试。
 

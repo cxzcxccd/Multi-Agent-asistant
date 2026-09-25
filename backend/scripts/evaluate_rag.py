@@ -6,7 +6,12 @@ from pathlib import Path
 from app.ai.model_client import create_model_client
 from app.db.initialize import initialize_database
 from app.db.session import get_session_factory
-from app.modules.knowledge.evaluation import ModelRagAnswerEngine, RagEvaluator
+from app.modules.knowledge.evaluation import (
+    ModelRagAnswerEngine,
+    RagComparisonEvaluator,
+    RagEvaluator,
+)
+from app.modules.knowledge.reranker import FastEmbedReranker
 from app.modules.knowledge.repository import KnowledgeRepository
 from app.modules.knowledge.service import KnowledgeService
 
@@ -21,6 +26,11 @@ def parse_arguments() -> argparse.Namespace:
         help="只评估检索，不调用聊天模型生成和评审答案",
     )
     parser.add_argument("--limit", type=int, default=3, help="每个问题返回的知识块数量")
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="比较关键词、向量、混合和混合重排四种检索方案",
+    )
     parser.add_argument(
         "--cases",
         type=Path,
@@ -48,6 +58,32 @@ def main() -> None:
         answer_engine = ModelRagAnswerEngine(model_client)
 
     evaluator = RagEvaluator(service, arguments.cases, answer_engine)
+    if arguments.compare:
+        rerank_service = KnowledgeService(
+            repository,
+            reranker=FastEmbedReranker(),
+        )
+        services = {
+            "keyword": service,
+            "vector": service,
+            "hybrid": service,
+            "hybrid_rerank": rerank_service,
+        }
+        comparison_evaluator = RagComparisonEvaluator(
+            services,
+            arguments.cases,
+            answer_engine,
+        )
+        comparison = comparison_evaluator.run()
+        comparison_path = comparison_evaluator.save(comparison, arguments.output)
+        for item in comparison.reports:
+            print(
+                f"{item.strategy}: Recall@3={item.recall_at_3:.4f}, "
+                f"MRR={item.mrr:.4f}, P95={item.retrieval_latency_p95_ms:.2f}ms"
+            )
+        print(f"对比报告: {comparison_path}")
+        return
+
     report = evaluator.run(limit=arguments.limit)
     detail_path, report_path = evaluator.save(report, arguments.output)
 

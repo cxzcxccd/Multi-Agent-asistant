@@ -13,7 +13,12 @@ from app.db.session import get_session_factory
 from app.modules.auth.dependencies import StaffPrincipal, get_current_user
 from app.modules.auth.schemas import Principal
 from app.modules.knowledge.repository import KnowledgeRepository
-from app.modules.knowledge.evaluation import ModelRagAnswerEngine, RagEvaluator
+from app.modules.knowledge.evaluation import (
+    ModelRagAnswerEngine,
+    RagComparisonEvaluator,
+    RagEvaluator,
+)
+from app.modules.knowledge.reranker import FastEmbedReranker
 from app.modules.knowledge.indexer import KnowledgeIndexer
 from app.modules.knowledge.loader import load_knowledge_directory
 from app.modules.knowledge.schemas import (
@@ -22,6 +27,7 @@ from app.modules.knowledge.schemas import (
     KnowledgeIndexStatus,
     KnowledgeSearchResponse,
     RagEvaluationReport,
+    RagComparisonReport,
 )
 from app.modules.knowledge.service import KnowledgeService
 from app.modules.knowledge.vector_store import VectorStoreUnavailableError
@@ -101,6 +107,46 @@ async def evaluate_knowledge(
         model_client = create_model_client(tools=[])
         answer_engine = ModelRagAnswerEngine(model_client)
     evaluator = RagEvaluator(service, cases_path, answer_engine)
+    try:
+        report = await run_in_threadpool(evaluator.run)
+        output_path = BACKEND_ROOT / "data" / "evaluation" / "results"
+        await run_in_threadpool(evaluator.save, report, output_path)
+        return report
+    except VectorStoreUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Milvus 向量数据库暂不可用",
+        ) from error
+
+
+@staff_router.post("/evaluate/comparison", response_model=RagComparisonReport)
+async def compare_knowledge_retrieval(
+    service: KnowledgeServiceDependency,
+    _user: StaffPrincipal,
+    include_answers: bool = False,
+) -> RagComparisonReport:
+    """使用同一批案例比较关键词、向量、混合与重排方案。"""
+
+    answer_engine = None
+    if include_answers:
+        model_client = create_model_client(tools=[])
+        answer_engine = ModelRagAnswerEngine(model_client)
+    rerank_service = KnowledgeService(
+        repository=service.repository,
+        embedding_provider=service.embedding_provider,
+        vector_store=service.vector_store,
+        vector_weight=service.vector_weight,
+        minimum_score=service.minimum_score,
+        reranker=FastEmbedReranker(),
+    )
+    services = {
+        "keyword": service,
+        "vector": service,
+        "hybrid": service,
+        "hybrid_rerank": rerank_service,
+    }
+    cases_path = BACKEND_ROOT / "data" / "evaluation" / "rag_cases.json"
+    evaluator = RagComparisonEvaluator(services, cases_path, answer_engine)
     try:
         report = await run_in_threadpool(evaluator.run)
         output_path = BACKEND_ROOT / "data" / "evaluation" / "results"

@@ -186,6 +186,7 @@ class FakeAnswerEngine:
             correctness=0.9,
             faithfulness=1.0,
             completeness=0.8,
+            citation_correctness=1.0,
             reason="回答与参考答案一致且有资料支持",
         )
 
@@ -203,7 +204,47 @@ def test_full_rag_evaluation_scores_answers_and_writes_report(tmp_path: Path) ->
     assert report.answer_faithfulness == 1.0
     assert report.answer_completeness == 0.8
     assert report.citation_precision == 1.0
+    assert report.citation_correctness == 1.0
     assert report.results[0].generated_answer
     assert report.results[0].retrieval_latency_ms >= 0
     assert detail_path.read_text(encoding="utf-8").count("\n") == 12
     assert "RAG 检索与回答评测报告" in report_path.read_text(encoding="utf-8")
+
+
+class FakeReranker:
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        scores: list[float] = []
+        for document in documents:
+            scores.append(1.0 if "保修范围" in document else 0.1)
+        return scores
+
+
+def test_search_supports_four_retrieval_strategies(tmp_path: Path) -> None:
+    service = create_service(tmp_path / "strategies.db")
+    service.reranker = FakeReranker()
+
+    keyword = service.search("耳机进水保修", strategy="keyword")
+    vector = service.search("耳机进水保修", strategy="vector")
+    hybrid = service.search("耳机进水保修", strategy="hybrid")
+    reranked = service.search("耳机进水保修", strategy="hybrid_rerank")
+
+    assert keyword.retrieval_mode == "keyword"
+    assert vector.retrieval_mode == "vector"
+    assert hybrid.retrieval_mode == "hybrid"
+    assert reranked.retrieval_mode == "hybrid_rerank"
+    assert reranked.items[0].section == "保修范围"
+
+
+def test_failed_retrieval_is_retried_with_gold_context(tmp_path: Path) -> None:
+    service = create_service(tmp_path / "gold-context.db")
+    service.minimum_score = 1.0
+    cases_path = Path(__file__).resolve().parents[1] / "data" / "evaluation" / "rag_cases.json"
+
+    report = RagEvaluator(service, cases_path, FakeAnswerEngine()).run()
+    first = report.results[0]
+
+    assert first.retrieval_passed is False
+    assert first.gold_answer is not None
+    assert first.gold_answer_quality is not None
+    assert first.error_type == "retrieval_error"
+    assert report.recall_at_1 <= report.recall_at_3 <= report.recall_at_5

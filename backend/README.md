@@ -304,6 +304,7 @@ backend/
 - `GET /api/staff/knowledge/status`：客服查看索引数量、向量数量和模型。
 - `POST /api/staff/knowledge/reindex`：客服按内容哈希增量重建知识索引。
 - `POST /api/staff/knowledge/evaluate`：运行固定检索评测；增加 `?include_answers=true` 后还会调用聊天模型评估回答质量。
+- `POST /api/staff/knowledge/evaluate/comparison`：在同一批案例上比较关键词、向量、混合和混合重排检索。
 - `GET /docs`：打开 FastAPI 交互式接口文档。
 
 前端普通对话、商品咨询、订单、物流、售后和人工服务均调用后端接口。执行时间线中的
@@ -354,12 +355,32 @@ RAG 知识索引也默认使用同一个 `BAAI/bge-small-zh-v1.5`，文档通过
 
 # 运行检索与回答完整评测
 .\.venv\Scripts\python.exe -m scripts.evaluate_rag
+
+# 运行四种检索方案对比；首次运行会下载约1GB的BGE重排模型
+.\.venv\Scripts\python.exe -m scripts.evaluate_rag --compare --retrieval-only
 ```
 
 结果写入 `data/evaluation/results/evaluation_results.jsonl` 和
 `data/evaluation/results/evaluation_report.md`。前者保存每条问题的召回来源、生成答案、引用、
 评分和错误归因；后者汇总 Recall@K、MRR、拒答准确率、P50/P95 延迟、回答质量和引用准确率。
 生成结果属于本地运行产物，不提交到 Git。
+
+完整评测会计算 `Recall@1/3/5`、MRR、无答案错误召回率、P50/P95延迟、回答正确性、
+忠实度、完整性、拒答准确率和引用支持度。检索失败时，评测器会再把人工标注的正确知识块
+直接交给模型：正确知识块下能够回答则归为检索错误，仍不能回答则归为知识库或标注错误。
+
+JDDC 500条数据必须人工对应当前知识库后才能用于项目RAG指标。标注与划分命令如下：
+
+```powershell
+# 已生成一次标注模板；仅在文件不存在时执行
+.\.venv\Scripts\python.exe -m scripts.prepare_rag_evaluation initialize
+
+# 人工填写并把 review_status 改成 reviewed 后，生成300/100/100分层数据
+.\.venv\Scripts\python.exe -m scripts.prepare_rag_evaluation build
+```
+
+标注模板位于 `data/evaluation/rag_annotations_500.jsonl`。构建脚本会拒绝未复核、可回答但
+缺少来源、不可回答却填写来源或缺少参考答案的数据，避免自动主题映射污染最终指标。
 
 ## 数据库与迁移
 
