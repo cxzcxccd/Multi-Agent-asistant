@@ -75,14 +75,19 @@ export interface AfterSale {
   reviewer?: string;
   reviewReason?: string;
   sourceDraftId: string;
+  version?: number;
+  origin?: 'backend' | 'script';
 }
 export interface RunEvent {
   id: string;
-  type: 'Agent' | 'Tool' | 'Retrieval';
+  type: 'Router' | 'Agent' | 'Tool' | 'Retrieval' | 'Summary';
   name: string;
   label: string;
   status: 'running' | 'success' | 'error' | 'stopped';
   result?: string;
+  output?: string;
+  description?: string;
+  toolResults?: Array<{ name: string; output: unknown }>;
   duration?: number;
 }
 export interface Run {

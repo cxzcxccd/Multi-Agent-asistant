@@ -1,8 +1,31 @@
 import { useSyncExternalStore } from 'react';
-import { ChatApiError, streamChatMessage } from './api';
-import type { ChatStreamCallbacks } from './api';
+import {
+  AfterSalesApiError,
+  ChatApiError,
+  createAfterSaleDraft,
+  getAuthSession,
+  listAfterSales,
+  listPendingAfterSales,
+  reviewAfterSale,
+  requestHumanHandoff,
+  sendStaffMessage,
+  streamChatMessage,
+  submitAfterSaleDraft,
+  subscribeToConversations,
+  subscribeToStaffConversations,
+  updateConversationMode,
+} from './api';
+import type { ApiAfterSaleRequest, ApiConversation, ChatStreamCallbacks } from './api';
 import { buyers, findOrder, findProduct, orders, policies, products } from './data';
-import type { BuyerId, Conversation, DemoState, Draft, Message, RunEvent } from './types';
+import type {
+  AfterSale,
+  BuyerId,
+  Conversation,
+  DemoState,
+  Draft,
+  Message,
+  RunEvent,
+} from './types';
 
 const KEY = 'geek-select-demo-v1';
 const uid = () => crypto.randomUUID();
@@ -20,6 +43,7 @@ const tabId = (() => {
 const now = () => new Date().toISOString();
 const tokens = new Map<string, string>();
 const backendRequests = new Map<string, AbortController>();
+const afterSaleSubmissions = new Map<string, Promise<void>>();
 const useBackendChat = import.meta.env.VITE_CHAT_MODE !== 'script';
 export const backendChatEnabled = useBackendChat;
 const listeners = new Set<() => void>();
@@ -215,8 +239,89 @@ export function setFault(fault: DemoState['fault']) {
     s.fault = fault;
   });
 }
-export function handoff(id: string) {
+function mergeRemoteConversation(local: Conversation, remote: ApiConversation) {
+  local.remoteId = remote.id;
+  local.title = remote.title;
+  local.mode = remote.mode;
+  for (const remoteMessage of remote.messages) {
+    const exists = local.messages.some((message) => message.id === remoteMessage.id);
+    if (exists) continue;
+    local.messages.push({
+      id: remoteMessage.id,
+      role: remoteMessage.role,
+      text: remoteMessage.content,
+      time: remoteMessage.created_at,
+      origin: 'backend',
+    });
+  }
+}
+
+function conversationFromRemote(remote: ApiConversation): Conversation {
+  const conversation: Conversation = {
+    id: remote.id,
+    remoteId: remote.id,
+    buyer: remote.buyer_id,
+    title: remote.title,
+    createdAt: remote.created_at,
+    mode: remote.mode,
+    messages: [],
+    context: {},
+  };
+  mergeRemoteConversation(conversation, remote);
+  return conversation;
+}
+
+function mergeConversationSnapshots(remoteConversations: ApiConversation[]) {
+  update((s) => {
+    for (const remote of remoteConversations) {
+      const local = s.conversations.find(
+        (conversation) => conversation.remoteId === remote.id || conversation.id === remote.id,
+      );
+      if (local) {
+        mergeRemoteConversation(local, remote);
+        continue;
+      }
+      s.conversations.unshift(conversationFromRemote(remote));
+    }
+  });
+}
+
+export function subscribeToConversationUpdates(): () => void {
+  if (!useBackendChat) return () => {};
+  const session = getAuthSession();
+  if (session?.principal.role === 'staff') {
+    return subscribeToStaffConversations(mergeConversationSnapshots);
+  }
+  if (session?.principal.buyer_id) {
+    return subscribeToConversations(session.principal.buyer_id, mergeConversationSnapshots);
+  }
+  return () => {};
+}
+
+export async function handoff(id: string): Promise<void> {
   cancelRun(id);
+  const conversation = getConversation(id);
+  if (!conversation || conversation.mode !== 'ai') return;
+  if (useBackendChat) {
+    try {
+      const remote = await requestHumanHandoff({
+        buyerId: conversation.buyer,
+        conversationId: conversation.remoteId,
+        title: conversation.title,
+      });
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) mergeRemoteConversation(current, remote);
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '转人工请求失败。';
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) addMessage(current, 'system', message);
+      });
+    }
+    return;
+  }
   update((s) => {
     const c = s.conversations.find((c) => c.id === id);
     if (!c || c.mode !== 'ai') return;
@@ -224,8 +329,29 @@ export function handoff(id: string) {
     addMessage(c, 'system', '已进入人工服务队列。咨询记录会一并交给客服，自动回复已暂停。');
   });
 }
-export function setServiceMode(id: string, mode: 'human' | 'ai' | 'closed') {
+export async function setServiceMode(id: string, mode: 'human' | 'ai' | 'closed'): Promise<void> {
   cancelRun(id);
+  const conversation = getConversation(id);
+  if (!conversation || conversation.mode === mode) return;
+  if (useBackendChat && conversation.remoteId) {
+    try {
+      const remote = await updateConversationMode({
+        conversationId: conversation.remoteId,
+        mode,
+      });
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) mergeRemoteConversation(current, remote);
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '会话状态更新失败。';
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) addMessage(current, 'system', message);
+      });
+    }
+    return;
+  }
   update((s) => {
     const c = s.conversations.find((c) => c.id === id);
     if (!c || c.mode === mode) return;
@@ -241,8 +367,28 @@ export function setServiceMode(id: string, mode: 'human' | 'ai' | 'closed') {
     );
   });
 }
-export function staffReply(id: string, text: string) {
+export async function staffReply(id: string, text: string): Promise<void> {
   if (!text.trim()) return;
+  const conversation = getConversation(id);
+  if (useBackendChat && conversation?.remoteId) {
+    try {
+      const remote = await sendStaffMessage({
+        conversationId: conversation.remoteId,
+        message: text.trim(),
+      });
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) mergeRemoteConversation(current, remote);
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '人工回复发送失败。';
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === id);
+        if (current) addMessage(current, 'system', message);
+      });
+    }
+    return;
+  }
   update((s) => {
     const c = s.conversations.find((c) => c.id === id);
     if (c?.mode === 'human') addMessage(c, 'staff', text.trim());
@@ -262,7 +408,7 @@ export function cancelDraft(conversationId: string) {
     addMessage(c, 'system', '申请草稿已取消，没有提交售后申请。');
   });
 }
-export function submitDraft(conversationId: string, draftId: string, revision: number) {
+function submitDraftInScriptMode(conversationId: string, draftId: string, revision: number) {
   update((s) => {
     const c = s.conversations.find((c) => c.id === conversationId && c.buyer === s.buyer);
     if (
@@ -295,6 +441,7 @@ export function submitDraft(conversationId: string, draftId: string, revision: n
       status: 'pending',
       createdAt: now(),
       sourceDraftId: draftId,
+      origin: 'script',
     });
     delete c.draft;
     addMessage(c, 'assistant', '申请已提交，正在等待客服审核。你可以在这里查看进度。', {
@@ -302,7 +449,126 @@ export function submitDraft(conversationId: string, draftId: string, revision: n
     });
   });
 }
-export function reviewRequest(id: string, decision: 'approved' | 'rejected', reason: string) {
+
+function requestTypeFromDraft(kind: string): '退货' | '换货' {
+  return kind.includes('换货') ? '换货' : '退货';
+}
+
+function mapAfterSaleRequest(
+  remote: ApiAfterSaleRequest,
+  conversationId: string,
+  sourceDraftId: string,
+): AfterSale {
+  const status = remote.status as AfterSale['status'];
+  return {
+    id: remote.id,
+    conversationId,
+    buyer: remote.buyer_id,
+    orderId: remote.order_id,
+    kind: `${remote.request_type}申请`,
+    reason: remote.reason,
+    status,
+    createdAt: remote.submitted_at || remote.created_at,
+    reviewedAt: remote.reviewed_at || undefined,
+    reviewer: remote.reviewer || undefined,
+    reviewReason: remote.review_reason || undefined,
+    sourceDraftId,
+    version: remote.version,
+    origin: 'backend',
+  };
+}
+
+async function createOrRecoverAfterSaleDraft(
+  buyerId: BuyerId,
+  draft: Draft,
+): Promise<ApiAfterSaleRequest> {
+  try {
+    return await createAfterSaleDraft({
+      buyerId,
+      orderId: draft.orderId,
+      requestType: requestTypeFromDraft(draft.kind),
+      reason: draft.reason.trim(),
+    });
+  } catch (error) {
+    if (!(error instanceof AfterSalesApiError) || error.status !== 409) throw error;
+
+    // 创建响应丢失时，后端可能已经保存草稿。先恢复它，再安全地重试提交。
+    const requests = await listAfterSales(buyerId);
+    const matchingDraft = requests.find((item) => {
+      const sameOrder = item.order_id === draft.orderId;
+      const sameReason = item.reason === draft.reason.trim();
+      const active = item.status === 'draft' || item.status === 'pending';
+      return active && sameOrder && sameReason;
+    });
+    if (!matchingDraft) throw error;
+    return matchingDraft;
+  }
+}
+
+async function submitDraftToBackend(
+  conversationId: string,
+  draftId: string,
+  revision: number,
+): Promise<void> {
+  const conversation = getConversation(conversationId);
+  const draft = conversation?.draft;
+  if (
+    !conversation ||
+    !draft ||
+    draft.id !== draftId ||
+    draft.revision !== revision ||
+    !draft.reason.trim()
+  ) {
+    throw new Error('草稿已变更，请重新核对后提交。');
+  }
+
+  const created = await createOrRecoverAfterSaleDraft(conversation.buyer, draft);
+  let submitted = created;
+  if (created.status === 'draft') {
+    submitted = await submitAfterSaleDraft({
+      requestId: created.id,
+      buyerId: conversation.buyer,
+      expectedVersion: created.version,
+      idempotencyKey: `submit-${draft.id}-${revision}`,
+    });
+  }
+
+  update((s) => {
+    const current = s.conversations.find((item) => item.id === conversationId);
+    if (!current?.draft || current.draft.id !== draftId) return;
+
+    const request = mapAfterSaleRequest(submitted, conversationId, draftId);
+    s.requests = s.requests.filter((item) => item.id !== request.id);
+    s.requests.unshift(request);
+    delete current.draft;
+    addMessage(current, 'assistant', '申请已提交，正在等待客服审核。你可以在这里查看进度。', {
+      requestId: request.id,
+      origin: 'backend',
+    });
+  });
+}
+
+export function submitDraft(
+  conversationId: string,
+  draftId: string,
+  revision: number,
+): Promise<void> {
+  if (!useBackendChat) {
+    submitDraftInScriptMode(conversationId, draftId, revision);
+    return Promise.resolve();
+  }
+
+  const currentSubmission = afterSaleSubmissions.get(draftId);
+  if (currentSubmission) return currentSubmission;
+
+  const submission = submitDraftToBackend(conversationId, draftId, revision).finally(() => {
+    afterSaleSubmissions.delete(draftId);
+  });
+  afterSaleSubmissions.set(draftId, submission);
+  return submission;
+}
+
+function reviewRequestInScriptMode(id: string, decision: 'approved' | 'rejected', reason: string) {
   if (!reason.trim()) return;
   update((s) => {
     const r = s.requests.find((r) => r.id === id);
@@ -321,6 +587,67 @@ export function reviewRequest(id: string, decision: 'approved' | 'rejected', rea
           : `售后申请未获通过：${reason.trim()}。如需补充说明，请联系人工客服。`,
         { requestId: id },
       );
+  });
+}
+
+export async function reviewRequest(
+  id: string,
+  decision: 'approved' | 'rejected',
+  reason: string,
+): Promise<void> {
+  const request = state.requests.find((item) => item.id === id);
+  if (!request || !reason.trim()) return;
+  if (!useBackendChat || request.origin !== 'backend' || request.version === undefined) {
+    reviewRequestInScriptMode(id, decision, reason);
+    return;
+  }
+
+  const reviewed = await reviewAfterSale({
+    requestId: request.id,
+    reviewer: '客服小周',
+    decision,
+    reason: reason.trim(),
+    expectedVersion: request.version,
+  });
+  update((s) => {
+    const current = s.requests.find((item) => item.id === id);
+    if (!current) return;
+
+    const mapped = mapAfterSaleRequest(reviewed, current.conversationId, current.sourceDraftId);
+    Object.assign(current, mapped);
+    const conversation = s.conversations.find((item) => item.id === current.conversationId);
+    if (!conversation) return;
+    const reply =
+      decision === 'approved'
+        ? '你的售后申请已审核通过。请根据客服指引确认后续处理；当前没有执行退款。'
+        : `售后申请未获通过：${reason.trim()}。如需补充说明，请联系人工客服。`;
+    addMessage(conversation, 'staff', reply, { requestId: id, origin: 'backend' });
+  });
+}
+
+export async function refreshAfterSales(): Promise<void> {
+  if (!useBackendChat) return;
+
+  const session = getAuthSession();
+  let remoteRequests: ApiAfterSaleRequest[] = [];
+  if (session?.principal.role === 'staff') {
+    remoteRequests = await listPendingAfterSales();
+  } else if (session?.principal.buyer_id) {
+    const buyerRequests = await listAfterSales(session.principal.buyer_id);
+    remoteRequests = buyerRequests.filter((item) => item.status !== 'draft');
+  }
+  update((s) => {
+    for (const remote of remoteRequests) {
+      const existing = s.requests.find((item) => item.id === remote.id);
+      const conversationId = existing?.conversationId || s.active[remote.buyer_id];
+      const sourceDraftId = existing?.sourceDraftId || remote.id;
+      const mapped = mapAfterSaleRequest(remote, conversationId, sourceDraftId);
+      if (existing) {
+        Object.assign(existing, mapped);
+      } else {
+        s.requests.push(mapped);
+      }
+    }
   });
 }
 
@@ -573,32 +900,10 @@ function isHandoffRequest(text: string): boolean {
   return asksForStaff || asksForTakeover;
 }
 
-function isSimulatedBusinessRequest(conversation: Conversation, text: string): boolean {
-  // 只有尚未接入后端的业务走脚本，普通对话不需要命中商品关键词。
-  const mentionsOrder = /订单|物流|快递|发货|查单/.test(text);
-  const containsOrderNumber = /\b\d{5}\b/.test(text);
-  const requestsAfterSale = /退货|退款|售后|换货/.test(text);
+function isSimulatedBusinessRequest(text: string): boolean {
+  // 售后已接入 LangGraph，只有尚未建立后端资料库的店铺规则继续走脚本。
   const asksStorePolicy = /店铺.*规则|运费|发货政策/.test(text);
-
-  if (mentionsOrder || containsOrderNumber || requestsAfterSale || asksStorePolicy) {
-    return true;
-  }
-
-  // 售后草稿可以继续补充原因，但旧的待选订单状态不能拦截新的普通对话。
-  const waitingForReason = conversation.context.awaiting === 'reason';
-  const describesProblem =
-    /没声音|故障|损坏|坏了|不喜欢|不合适|断连|不能|无法|质量|破损|杂音|不充电/.test(text);
-  if (waitingForReason && describesProblem) {
-    return true;
-  }
-
-  const hasSelectedOrder = Boolean(conversation.context.orderId);
-  const asksDeliveryProgress = /到哪了|到哪里了|什么时候到/.test(text);
-  if (hasSelectedOrder && asksDeliveryProgress) {
-    return true;
-  }
-
-  return false;
+  return asksStorePolicy;
 }
 
 interface BackendReplyInput {
@@ -608,6 +913,77 @@ interface BackendReplyInput {
   runId: string;
   started: number;
   isLive: () => boolean;
+}
+
+function moduleForIntent(intent: string): string {
+  const moduleNames: Record<string, string> = {
+    product_inquiry: '商品咨询',
+    order_inquiry: '订单查询',
+    after_sale: '售后服务',
+    knowledge_inquiry: '知识问答',
+    human_service: '人工服务',
+    general_conversation: '通用咨询',
+  };
+  return moduleNames[intent] || '通用咨询';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function draftFromToolResults(
+  toolResults: Array<{ name: string; output: unknown }> | undefined,
+): Draft | undefined {
+  if (!toolResults) return undefined;
+
+  for (const toolResult of toolResults) {
+    if (toolResult.name !== 'prepare_after_sale_draft' || !isRecord(toolResult.output)) continue;
+    const artifact = toolResult.output.artifact;
+    if (!isRecord(artifact) || artifact.type !== 'after_sale_draft') continue;
+    const remoteDraft = artifact.draft;
+    if (!isRecord(remoteDraft)) continue;
+
+    const orderId = remoteDraft.order_id;
+    const requestType = remoteDraft.request_type;
+    const reason = remoteDraft.reason;
+    if (
+      typeof orderId !== 'string' ||
+      typeof requestType !== 'string' ||
+      typeof reason !== 'string'
+    ) {
+      continue;
+    }
+    return {
+      id: uid(),
+      orderId,
+      kind: requestType === '换货' ? '换货申请' : '退货申请',
+      reason,
+      revision: 1,
+    };
+  }
+  return undefined;
+}
+
+function sourcesFromToolResults(
+  toolResults: Array<{ name: string; output: unknown }> | undefined,
+): string[] {
+  if (!toolResults) return [];
+  const sources: string[] = [];
+  for (const toolResult of toolResults) {
+    if (toolResult.name !== 'search_knowledge' || !isRecord(toolResult.output)) continue;
+    const remoteSources = toolResult.output.sources;
+    if (!Array.isArray(remoteSources)) continue;
+    for (const source of remoteSources) {
+      if (!isRecord(source)) continue;
+      const document = source.document;
+      const section = source.section;
+      const content = source.content;
+      if (typeof document !== 'string' || typeof section !== 'string') continue;
+      const label = `${document} · ${section}`;
+      sources.push(typeof content === 'string' ? `${label}\n${content}` : label);
+    }
+  }
+  return sources;
 }
 
 async function sendBackendReply(input: BackendReplyInput) {
@@ -623,17 +999,19 @@ async function sendBackendReply(input: BackendReplyInput) {
       ownerTab: tabId,
       conversationId,
       query: text,
-      module: 'LangGraph 客服',
+      module: '意图识别中',
       origin: 'backend',
       status: 'running',
       startedAt: now(),
       events: [
         {
           id: uid(),
-          type: 'Agent',
-          name: 'customer_service_graph',
-          label: 'LangGraph 正在处理消息',
+          type: 'Router',
+          name: 'intent_router',
+          label: '分流 Router',
           status: 'running',
+          output: '正在进行语义路由',
+          description: '后端正在规范化 Query 并计算意图相似度。',
         },
       ],
     });
@@ -662,22 +1040,67 @@ async function sendBackendReply(input: BackendReplyInput) {
         const target = s.conversations.find((item) => item.id === conversationId)!;
         const run = s.runs.find((item) => item.id === runId)!;
 
+        if (data.phase === 'router' && data.state === 'completed') {
+          const analysis = data.query_analysis;
+          if (!analysis) {
+            return;
+          }
+          const routerEvent = run.events.find((event) => event.type === 'Router');
+          run.module = moduleForIntent(analysis.primary_intent);
+          if (routerEvent) {
+            const secondaryText = analysis.secondary_intents.length
+              ? `；次要意图：${analysis.secondary_intents.join('、')}`
+              : '';
+            Object.assign(routerEvent, {
+              status: 'success',
+              output: analysis.primary_intent,
+              description: `${analysis.description} 相似度 ${(
+                analysis.similarity_score * 100
+              ).toFixed(1)}%${secondaryText}`,
+              result: analysis.optimized_query,
+            });
+          }
+          return;
+        }
+
         if (data.phase === 'model' && data.state === 'started') {
           const message = target.messages.find((item) => item.id === streamingMessageId);
           if (message) {
             message.text = '';
           }
-          run.events[0].label = '模型正在生成回复';
+          const summaryIsRunning = run.events.some(
+            (event) => event.type === 'Summary' && event.status === 'running',
+          );
+          if (!summaryIsRunning) {
+            run.events.push({
+              id: uid(),
+              type: 'Summary',
+              name: 'response_summary',
+              label: '汇总',
+              status: 'running',
+              output: '正在生成客服回复',
+              description: '模型正在根据对话与工具结果组织答案。',
+            });
+          }
           return;
         }
 
         if (data.phase === 'tool' && data.state === 'started') {
+          run.events = run.events.filter(
+            (event) => !(event.type === 'Summary' && event.status === 'running'),
+          );
+          const toolNames = data.tool_names?.length ? data.tool_names : ['unknown_tool'];
+          const retrievingKnowledge = toolNames.includes('search_knowledge');
           run.events.push({
             id: uid(),
-            type: 'Tool',
-            name: 'catalog_tools',
-            label: '正在查询商品数据',
+            type: retrievingKnowledge ? 'Retrieval' : 'Tool',
+            name: toolNames.join(', '),
+            label: retrievingKnowledge ? '检索' : '工具',
             status: 'running',
+            output: retrievingKnowledge
+              ? '正在检索商城知识库'
+              : `正在执行 ${data.tool_calls} 个工具调用`,
+            description: `调用 ${toolNames.join('、')}`,
           });
           return;
         }
@@ -685,14 +1108,29 @@ async function sendBackendReply(input: BackendReplyInput) {
         let toolEvent: RunEvent | undefined;
         for (let index = run.events.length - 1; index >= 0; index -= 1) {
           const event = run.events[index];
-          if (event.type === 'Tool' && event.status === 'running') {
+          if ((event.type === 'Tool' || event.type === 'Retrieval') && event.status === 'running') {
             toolEvent = event;
             break;
           }
         }
         if (toolEvent) {
           toolEvent.status = 'success';
-          toolEvent.result = `完成 ${data.tool_calls} 次商品工具调用`;
+          toolEvent.output = `执行了 ${data.tool_calls} 个工具调用`;
+          toolEvent.result = toolEvent.description;
+          toolEvent.toolResults = data.tool_results || [];
+          if (toolEvent.type === 'Retrieval') {
+            const knowledgeSources = sourcesFromToolResults(data.tool_results);
+            toolEvent.output = `命中 ${knowledgeSources.length} 条资料`;
+            const message = target.messages.find((item) => item.id === streamingMessageId);
+            if (message && knowledgeSources.length) message.sources = knowledgeSources;
+          }
+          const afterSaleDraft = draftFromToolResults(data.tool_results);
+          if (afterSaleDraft) {
+            target.draft = afterSaleDraft;
+            target.context = { orderId: afterSaleDraft.orderId, intent: 'aftersales' };
+            const message = target.messages.find((item) => item.id === streamingMessageId);
+            if (message) message.draftId = afterSaleDraft.id;
+          }
         }
       });
     },
@@ -732,11 +1170,29 @@ async function sendBackendReply(input: BackendReplyInput) {
 
         run.status = 'success';
         run.duration = Math.round(performance.now() - started);
-        Object.assign(run.events[0], {
-          status: 'success',
-          duration: run.duration,
-          result: `模型调用 ${response.run.model_calls} 次，工具调用 ${response.run.tool_calls} 次`,
-        });
+        const summary = run.events.find((event) => event.type === 'Summary');
+        if (summary) {
+          Object.assign(summary, {
+            status: 'success',
+            duration: run.duration,
+            output: '已生成最终客服回复',
+            description: `模型调用 ${response.run.model_calls} 次，工具调用 ${response.run.tool_calls} 次。`,
+            result: response.assistant_message.content,
+          });
+        }
+        const analysis = response.run.query_analysis;
+        const routerEvent = run.events.find((event) => event.type === 'Router');
+        if (analysis && routerEvent?.status === 'running') {
+          run.module = moduleForIntent(analysis.primary_intent);
+          Object.assign(routerEvent, {
+            status: 'success',
+            output: analysis.primary_intent,
+            description: `${analysis.description} 相似度 ${(
+              analysis.similarity_score * 100
+            ).toFixed(1)}%`,
+            result: analysis.optimized_query,
+          });
+        }
       });
     },
   };
@@ -781,7 +1237,8 @@ async function sendBackendReply(input: BackendReplyInput) {
       const run = s.runs.find((item) => item.id === runId)!;
       run.status = 'error';
       run.duration = Math.round(performance.now() - started);
-      Object.assign(run.events[0], {
+      const runningEvent = run.events.find((event) => event.status === 'running');
+      Object.assign(runningEvent || run.events[0], {
         status: 'error',
         duration: run.duration,
         result: message,
@@ -827,7 +1284,7 @@ export async function sendMessage(conversationId: string, value: string) {
   });
   if (c.mode !== 'ai') return;
   if (isHandoffRequest(text)) {
-    handoff(conversationId);
+    await handoff(conversationId);
     return;
   }
   const token = uid(),
@@ -842,7 +1299,7 @@ export async function sendMessage(conversationId: string, value: string) {
       latest.runs.some((r) => r.id === runId && r.status === 'running')
     );
   };
-  const simulatedBusinessRequest = isSimulatedBusinessRequest(c, text);
+  const simulatedBusinessRequest = isSimulatedBusinessRequest(text);
   const shouldCallBackend = useBackendChat && !simulatedBusinessRequest;
   if (shouldCallBackend) {
     await sendBackendReply({ conversationId, text, token, runId, started, isLive });

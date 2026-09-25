@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDownUp,
   ArrowLeft,
@@ -14,12 +14,20 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { findProduct, money, policies, products } from './data';
+import { getProductDetail, getProducts } from './api';
+import { money, policies } from './data';
 import { Badge, Modal, SourceList } from './components';
-import type { Product, View } from './types';
+import type { Category, Product, View } from './types';
+
+type CategoryFilter = '全部商品' | Category;
+type PriceFilter = 'all' | 'under200' | '200to400' | 'over400';
+type ProductSort = 'default' | 'price-asc' | 'price-desc';
+
+const categories: CategoryFilter[] = ['全部商品', '耳机', '充电器', '扩展坞'];
 
 export function CatalogPhoto({ product }: { product: Product }) {
-  const index = products.findIndex((p) => p.id === product.id);
+  const productNumber = Number.parseInt(product.id.slice(1), 10);
+  const index = Number.isNaN(productNumber) ? 0 : Math.max(productNumber - 1, 0);
   return (
     <div
       className="catalog-photo"
@@ -38,39 +46,113 @@ export default function Shop({
   onBack: () => void;
   onProductAction: (id: string) => void;
 }) {
-  const [category, setCategory] = useState('全部商品'),
-    [query, setQuery] = useState(''),
-    [queryInput, setQueryInput] = useState('');
-  const [sort, setSort] = useState('default'),
-    [onlyStock, setOnlyStock] = useState(false),
-    [budget, setBudget] = useState('all');
+  const [category, setCategory] = useState<CategoryFilter>('全部商品');
+  const [query, setQuery] = useState('');
+  const [queryInput, setQueryInput] = useState('');
+  const [sort, setSort] = useState<ProductSort>('default');
+  const [onlyStock, setOnlyStock] = useState(false);
+  const [budget, setBudget] = useState<PriceFilter>('all');
   const [selected, setSelected] = useState<string>();
+  const [products, setProducts] = useState<Product[]>([]);
+  const [total, setTotal] = useState(0);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState('');
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [selectedProduct, setSelectedProduct] = useState<Product>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const staff = origin === 'workbench';
-  const filtered = useMemo(
-    () =>
-      products
-        .filter((p) => {
-          const matchesText = `${p.name} ${p.series} ${p.specs.join(' ')} ${p.description}`
-            .toLowerCase()
-            .includes(query.toLowerCase());
-          return (
-            (category === '全部商品' || p.category === category) &&
-            matchesText &&
-            (!onlyStock || p.stock > 0) &&
-            (budget === 'all' ||
-              (budget === 'under200'
-                ? p.price <= 200
-                : budget === '200to400'
-                  ? p.price > 200 && p.price <= 400
-                  : p.price > 400))
-          );
-        })
-        .sort((a, b) =>
-          sort === 'price-asc' ? a.price - b.price : sort === 'price-desc' ? b.price - a.price : 0,
-        ),
-    [category, query, onlyStock, budget, sort],
-  );
-  const selectedProduct = selected ? findProduct(selected) : undefined;
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadProducts() {
+      setLoading(true);
+      setCatalogError('');
+
+      try {
+        let minPrice: number | undefined;
+        let maxPrice: number | undefined;
+
+        if (budget === 'under200') {
+          maxPrice = 200;
+        } else if (budget === '200to400') {
+          minPrice = 201;
+          maxPrice = 400;
+        } else if (budget === 'over400') {
+          minPrice = 401;
+        }
+
+        const response = await getProducts(
+          {
+            keyword: query || undefined,
+            category: category === '全部商品' ? undefined : category,
+            minPrice,
+            maxPrice,
+            inStock: onlyStock,
+            sort,
+            limit: 50,
+          },
+          controller.signal,
+        );
+
+        setProducts(response.items);
+        setTotal(response.total);
+        if (!query && category === '全部商品' && budget === 'all' && !onlyStock) {
+          setCatalogTotal(response.total);
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        setProducts([]);
+        setTotal(0);
+        setCatalogError(error instanceof Error ? error.message : '商品列表加载失败');
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadProducts();
+    return () => controller.abort();
+  }, [budget, category, onlyStock, query, reloadVersion, sort]);
+
+  useEffect(() => {
+    if (!selected) {
+      setSelectedProduct(undefined);
+      setDetailError('');
+      return;
+    }
+
+    const controller = new AbortController();
+    const productId = selected;
+
+    async function loadProductDetail() {
+      setSelectedProduct(undefined);
+      setDetailLoading(true);
+      setDetailError('');
+
+      try {
+        const product = await getProductDetail(productId, controller.signal);
+        setSelectedProduct(product);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        setDetailError(error instanceof Error ? error.message : '商品详情加载失败');
+      } finally {
+        if (!controller.signal.aborted) {
+          setDetailLoading(false);
+        }
+      }
+    }
+
+    void loadProductDetail();
+    return () => controller.abort();
+  }, [selected]);
   const clear = () => {
     setCategory('全部商品');
     setQuery('');
@@ -143,11 +225,11 @@ export default function Shop({
         </form>
       </section>
       <nav className="shop-category-nav" aria-label="商品分类">
-        {['全部商品', '耳机', '充电器', '扩展坞'].map((cat) => (
+        {categories.map((cat) => (
           <button key={cat} aria-pressed={category === cat} onClick={() => setCategory(cat)}>
             {cat === '全部商品' && <LayoutGrid size={17} />}
             {cat}
-            <span>{cat === '全部商品' ? 12 : 4}</span>
+            {cat === '全部商品' && catalogTotal > 0 && <span>{catalogTotal}</span>}
           </button>
         ))}
         <div>
@@ -162,7 +244,7 @@ export default function Shop({
         </div>
         <div className="collection-stats">
           <span>
-            <strong>12</strong> 件数码好物
+            <strong>{catalogTotal || '—'}</strong> 件数码好物
           </span>
           <span>
             <strong>3</strong> 大商品分类
@@ -177,7 +259,7 @@ export default function Shop({
         <div className="catalog-heading">
           <div>
             <h2>{query ? `“${query}”的搜索结果` : category}</h2>
-            <span aria-live="polite">共 {filtered.length} 件商品</span>
+            <span aria-live="polite">共 {total} 件商品</span>
           </div>
           <span className="catalog-disclaimer">示例价格与库存 · 图片为外观示意</span>
         </div>
@@ -188,7 +270,11 @@ export default function Shop({
             </button>
             <label>
               <ArrowDownUp size={14} />
-              <select aria-label="商品排序" value={sort} onChange={(e) => setSort(e.target.value)}>
+              <select
+                aria-label="商品排序"
+                value={sort}
+                onChange={(event) => setSort(event.target.value as ProductSort)}
+              >
                 <option value="default">价格排序</option>
                 <option value="price-asc">价格从低到高</option>
                 <option value="price-desc">价格从高到低</option>
@@ -200,7 +286,7 @@ export default function Shop({
             <select
               aria-label="商品价格区间"
               value={budget}
-              onChange={(e) => setBudget(e.target.value)}
+              onChange={(event) => setBudget(event.target.value as PriceFilter)}
             >
               <option value="all">全部价格</option>
               <option value="under200">200 元及以下</option>
@@ -222,9 +308,24 @@ export default function Shop({
             </button>
           )}
         </div>
-        {filtered.length ? (
+        {loading ? (
+          <div className="large-empty shop-empty" aria-live="polite">
+            <PackageSearch size={40} />
+            <h3>正在加载商品</h3>
+            <p>正在从商品服务获取最新的价格、库存和规格。</p>
+          </div>
+        ) : catalogError ? (
+          <div className="large-empty shop-empty" role="alert">
+            <PackageSearch size={40} />
+            <h3>商品加载失败</h3>
+            <p>{catalogError}</p>
+            <button className="btn" onClick={() => setReloadVersion((version) => version + 1)}>
+              重新加载
+            </button>
+          </div>
+        ) : products.length ? (
           <div className="shop-product-grid">
-            {filtered.map((p) => (
+            {products.map((p) => (
               <article
                 className={`shop-product ${!p.stock ? 'sold-out' : ''}`}
                 data-testid={`shop-product-${p.id}`}
@@ -288,52 +389,72 @@ export default function Shop({
         <ShieldCheck size={17} />
         <span>商品、价格与库存均为演示数据。需要具体建议时，可以随时回到客服会话。</span>
       </div>
-      {selectedProduct && (
+      {selected && (
         <Modal title="商品详情" onClose={() => setSelected(undefined)}>
-          <div className="shop-detail">
-            <CatalogPhoto product={selectedProduct} />
-            <div className="detail-copy">
-              <Badge tone="blue">{selectedProduct.category} · 示例商品</Badge>
-              <h2>{selectedProduct.name}</h2>
-              <p>{selectedProduct.description}</p>
-              <div className="detail-price">
-                {money(selectedProduct.price)}
-                <span>示例价</span>
-              </div>
-              <p className={selectedProduct.stock ? 'in-stock' : 'out-stock'}>
-                {selectedProduct.stock
-                  ? `当前库存 ${selectedProduct.stock} 件`
-                  : '暂时缺货 · 补货时间待定'}
-              </p>
-              <dl className="detail-specs">
-                <dt>商品编号</dt>
-                <dd>{selectedProduct.id.toUpperCase()}</dd>
-                <dt>系列</dt>
-                <dd>{selectedProduct.series}</dd>
-                {selectedProduct.specs.map((spec, i) => (
-                  <div key={spec}>
-                    <dt>参数 {i + 1}</dt>
-                    <dd>{spec}</dd>
-                  </div>
-                ))}
-              </dl>
+          {detailLoading ? (
+            <div className="large-empty shop-detail-status" aria-live="polite">
+              <PackageSearch size={36} />
+              <h3>正在加载商品详情</h3>
             </div>
-          </div>
-          <SourceList sources={[selectedProduct.source, 'POL-02 · 售后申请与审核 v1.0']} />
-          <div className="detail-service">
-            <ShieldCheck size={17} />
-            <p>{policies[1].content}</p>
-          </div>
-          <p className="tiny muted">外观为 AI 生成示意图；商品名称、参数和库存以本演示数据为准。</p>
-          <div className="modal-actions">
-            <button className="btn" onClick={() => setSelected(undefined)}>
-              继续逛店
-            </button>
-            <button className="btn btn-primary" onClick={() => act(selectedProduct.id)}>
-              <MessageSquare size={16} />
-              {staff ? '引用到客服回复' : '咨询这件商品'}
-            </button>
-          </div>
+          ) : detailError ? (
+            <div className="large-empty shop-detail-status" role="alert">
+              <PackageSearch size={36} />
+              <h3>商品详情加载失败</h3>
+              <p>{detailError}</p>
+              <button className="btn" onClick={() => setSelected(undefined)}>
+                关闭
+              </button>
+            </div>
+          ) : selectedProduct ? (
+            <>
+              <div className="shop-detail">
+                <CatalogPhoto product={selectedProduct} />
+                <div className="detail-copy">
+                  <Badge tone="blue">{selectedProduct.category} · 示例商品</Badge>
+                  <h2>{selectedProduct.name}</h2>
+                  <p>{selectedProduct.description}</p>
+                  <div className="detail-price">
+                    {money(selectedProduct.price)}
+                    <span>示例价</span>
+                  </div>
+                  <p className={selectedProduct.stock ? 'in-stock' : 'out-stock'}>
+                    {selectedProduct.stock
+                      ? `当前库存 ${selectedProduct.stock} 件`
+                      : '暂时缺货 · 补货时间待定'}
+                  </p>
+                  <dl className="detail-specs">
+                    <dt>商品编号</dt>
+                    <dd>{selectedProduct.id.toUpperCase()}</dd>
+                    <dt>系列</dt>
+                    <dd>{selectedProduct.series}</dd>
+                    {selectedProduct.specs.map((spec, i) => (
+                      <div key={spec}>
+                        <dt>参数 {i + 1}</dt>
+                        <dd>{spec}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              </div>
+              <SourceList sources={[selectedProduct.source, 'POL-02 · 售后申请与审核 v1.0']} />
+              <div className="detail-service">
+                <ShieldCheck size={17} />
+                <p>{policies[1].content}</p>
+              </div>
+              <p className="tiny muted">
+                外观为 AI 生成示意图；商品名称、参数和库存以本演示数据为准。
+              </p>
+              <div className="modal-actions">
+                <button className="btn" onClick={() => setSelected(undefined)}>
+                  继续逛店
+                </button>
+                <button className="btn btn-primary" onClick={() => act(selectedProduct.id)}>
+                  <MessageSquare size={16} />
+                  {staff ? '引用到客服回复' : '咨询这件商品'}
+                </button>
+              </div>
+            </>
+          ) : null}
         </Modal>
       )}
     </div>

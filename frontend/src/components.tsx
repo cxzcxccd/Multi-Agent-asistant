@@ -20,6 +20,11 @@ import type { AfterSale, BuyerId, Conversation, Product, Run } from './types';
 
 export const timeLabel = (value: string) =>
   new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+function formatToolOutput(output: unknown): string {
+  if (typeof output === 'string') return output;
+  return JSON.stringify(output, null, 2);
+}
 export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
@@ -188,6 +193,8 @@ export function DraftCard({ conversation }: { conversation: Conversation }) {
   const d = conversation.draft!;
   const [confirming, setConfirming] = useState(false);
   const [checked, setChecked] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const order = findOrder(d.orderId, conversation.buyer)!;
   return (
     <section className="draft-card">
@@ -260,16 +267,32 @@ export function DraftCard({ conversation }: { conversation: Conversation }) {
             />
             我已核对订单与申请内容
           </label>
+          {submitError && (
+            <p className="notice" role="alert">
+              {submitError}
+            </p>
+          )}
           <div className="modal-actions">
-            <button className="btn" onClick={() => setConfirming(false)}>
+            <button className="btn" disabled={submitting} onClick={() => setConfirming(false)}>
               返回修改
             </button>
             <button
               className="btn btn-primary"
-              disabled={!checked}
-              onClick={() => submitDraft(conversation.id, d.id, d.revision)}
+              disabled={!checked || submitting}
+              onClick={async () => {
+                setSubmitting(true);
+                setSubmitError('');
+                try {
+                  await submitDraft(conversation.id, d.id, d.revision);
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : '提交失败，请稍后重试。';
+                  setSubmitError(message);
+                } finally {
+                  setSubmitting(false);
+                }
+              }}
             >
-              提交申请
+              {submitting ? '正在提交…' : '提交申请'}
             </button>
           </div>
         </Modal>
@@ -327,12 +350,16 @@ export function SourceList({ sources }: { sources: string[] }) {
       </summary>
       <ul>
         {sources.map((s) => {
+          const [sourceLabel, ...sourceContentParts] = s.split('\n');
+          const sourceContent = sourceContentParts.join('\n');
           const p = products.find((p) => p.source === s),
             policy = policies.find((p) => s.startsWith(p.id));
           return (
             <li key={s}>
-              <strong>{s}</strong>
-              <p>{p ? `${p.specs.join('；')}。${p.description}` : policy?.content}</p>
+              <strong>{sourceLabel}</strong>
+              <p>
+                {sourceContent || (p ? `${p.specs.join('；')}。${p.description}` : policy?.content)}
+              </p>
             </li>
           );
         })}
@@ -342,10 +369,17 @@ export function SourceList({ sources }: { sources: string[] }) {
   );
 }
 export function RunTrace({ run, expanded = false }: { run: Run; expanded?: boolean }) {
+  const typeLabels: Record<string, string> = {
+    Router: '分流 Router',
+    Tool: '工具',
+    Summary: '汇总',
+    Agent: 'Agent',
+    Retrieval: '检索',
+  };
   return (
     <div className="run-trace">
       {run.events.map((e) => (
-        <div key={e.id} className={`trace-event ${e.status}`}>
+        <div key={e.id} className={`trace-event trace-${e.type.toLowerCase()} ${e.status}`}>
           <span className="trace-mark">
             {e.status === 'success' ? (
               <Check size={13} />
@@ -357,7 +391,7 @@ export function RunTrace({ run, expanded = false }: { run: Run; expanded?: boole
           </span>
           <div>
             <div className="row-between">
-              <strong>{e.label}</strong>
+              <strong className="trace-kind">{typeLabels[e.type] || e.type}</strong>
               <span className="tiny muted">
                 {e.status === 'running'
                   ? '进行中'
@@ -369,12 +403,37 @@ export function RunTrace({ run, expanded = false }: { run: Run; expanded?: boole
               </span>
             </div>
             {expanded && (
-              <>
-                <code>
-                  {e.type} · {e.name}
-                </code>
-                {e.result && <p>{e.result}</p>}
-              </>
+              <div className="trace-details">
+                {e.output && (
+                  <div>
+                    <span>输出</span>
+                    <code>{e.output}</code>
+                  </div>
+                )}
+                {e.description && (
+                  <div>
+                    <span>描述</span>
+                    <p>{e.description}</p>
+                  </div>
+                )}
+                {!e.output && (
+                  <code>
+                    {e.type} · {e.name}
+                  </code>
+                )}
+                {e.result && e.result !== e.description && (
+                  <div>
+                    <span>结果</span>
+                    <p>{e.result}</p>
+                  </div>
+                )}
+                {e.toolResults?.map((toolResult, index) => (
+                  <div className="trace-tool-result" key={`${toolResult.name}-${index}`}>
+                    <span>工具返回 · {toolResult.name}</span>
+                    <pre>{formatToolOutput(toolResult.output)}</pre>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
@@ -409,7 +468,7 @@ export function LatestRun({ conversationId }: { conversationId: string }) {
                 : '处理完成'}
         </Badge>
       </div>
-      <RunTrace run={run} />
+      <RunTrace run={run} expanded />
       <p className="tiny muted">
         {run.origin === 'backend' ? '后端 LangGraph 真实执行' : '脚本模拟执行 · 非真实 Agent 调用'}
       </p>

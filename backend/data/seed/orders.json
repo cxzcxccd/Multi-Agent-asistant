@@ -1,0 +1,126 @@
+[
+  {
+    "id": "10001",
+    "buyer_id": "A",
+    "status": "运输中",
+    "ordered_at": "2026-09-14",
+    "carrier": "演示速运",
+    "tracking_number": "DEMO10001",
+    "items": [
+      {
+        "product_id": "p01",
+        "product_name": "AirBeat Pro 降噪耳机",
+        "quantity": 1,
+        "unit_price": "299.00"
+      }
+    ],
+    "logistics": [
+      {
+        "occurred_at": "2026-09-15T09:20:00+08:00",
+        "title": "运输中",
+        "detail": "快件已到达杭州转运中心，正在发往目的站点。"
+      },
+      {
+        "occurred_at": "2026-09-14T18:35:00+08:00",
+        "title": "已揽收",
+        "detail": "演示速运已揽收包裹。"
+      },
+      {
+        "occurred_at": "2026-09-14T15:10:00+08:00",
+        "title": "商家已发货",
+        "detail": "商品已出库，等待承运方揽收。"
+      }
+    ]
+  },
+  {
+    "id": "10002",
+    "buyer_id": "A",
+    "status": "已签收",
+    "ordered_at": "2026-09-10",
+    "carrier": "演示速运",
+    "tracking_number": "DEMO10002",
+    "items": [
+      {
+        "product_id": "p02",
+        "product_name": "Studio One 头戴耳机",
+        "quantity": 1,
+        "unit_price": "499.00"
+      }
+    ],
+    "logistics": [
+      {
+        "occurred_at": "2026-09-12T14:30:00+08:00",
+        "title": "已签收",
+        "detail": "包裹已签收。如有问题，可申请售后。"
+      },
+      {
+        "occurred_at": "2026-09-11T10:00:00+08:00",
+        "title": "运输中",
+        "detail": "演示包裹正在运输。"
+      }
+    ]
+  },
+  {
+    "id": "10003",
+    "buyer_id": "A",
+    "status": "已完成",
+    "ordered_at": "2026-09-01",
+    "carrier": "演示速运",
+    "tracking_number": "DEMO10003",
+    "items": [
+      {
+        "product_id": "p09",
+        "product_name": "LinkHub 6 合 1 扩展坞",
+        "quantity": 1,
+        "unit_price": "199.00"
+      }
+    ],
+    "logistics": [
+      {
+        "occurred_at": "2026-09-03T11:20:00+08:00",
+        "title": "已签收",
+        "detail": "历史订单已完成。"
+      }
+    ]
+  },
+  {
+    "id": "10004",
+    "buyer_id": "A",
+    "status": "待发货",
+    "ordered_at": "2026-09-15",
+    "carrier": null,
+    "tracking_number": null,
+    "items": [
+      {
+        "product_id": "p05",
+        "product_name": "PowerMini 65W 氮化镓充电器",
+        "quantity": 2,
+        "unit_price": "129.00"
+      }
+    ],
+    "logistics": []
+  },
+  {
+    "id": "20001",
+    "buyer_id": "B",
+    "status": "已签收",
+    "ordered_at": "2026-09-08",
+    "carrier": "演示速运",
+    "tracking_number": "DEMO20001",
+    "items": [
+      {
+        "product_id": "p10",
+        "product_name": "LinkHub Pro 9 合 1 扩展坞",
+        "quantity": 1,
+        "unit_price": "329.00"
+      }
+    ],
+    "logistics": [
+      {
+        "occurred_at": "2026-09-10T16:00:00+08:00",
+        "title": "已签收",
+        "detail": "演示订单已签收。"
+      }
+    ]
+  }
+]

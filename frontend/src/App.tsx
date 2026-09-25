@@ -19,6 +19,7 @@ import {
   newConversation,
   selectConversation,
   sendMessage,
+  subscribeToConversationUpdates,
   switchBuyer,
   useDemo,
 } from './store';
@@ -28,6 +29,9 @@ import Workbench from './Workbench';
 import Lab from './Lab';
 import Shop from './Shop';
 import type { BuyerId, View } from './types';
+import { getAuthSession, logoutAccount } from './api';
+import type { AuthSession } from './api';
+import Login from './Login';
 
 const readView = (): View => {
   const hash = location.hash.slice(1);
@@ -43,6 +47,7 @@ export default function App() {
     [view, setView] = useState<View>(readView),
     [navOpen, setNavOpen] = useState(false);
   const [shopOrigin, setShopOrigin] = useState<Exclude<View, 'shop'>>('chat');
+  const [auth, setAuth] = useState<AuthSession | null>(() => getAuthSession());
   const [productQuote, setProductQuote] = useState<{ id: string; text: string }>();
   const [visited, setVisited] = useState<View[]>(() => [readView()]);
   const markVisited = (next: View) =>
@@ -56,6 +61,18 @@ export default function App() {
     window.addEventListener('hashchange', handle);
     return () => window.removeEventListener('hashchange', handle);
   }, []);
+  useEffect(() => {
+    if (!backendChatEnabled) return;
+    return subscribeToConversationUpdates();
+  }, [auth?.principal.subject]);
+  useEffect(() => {
+    if (!backendChatEnabled || auth === null) return;
+    if (auth.principal.role === 'buyer' && auth.principal.buyer_id) {
+      switchBuyer(auth.principal.buyer_id);
+      if (view === 'workbench' || view === 'lab') navigate('chat');
+    }
+    if (auth.principal.role === 'staff' && view === 'chat') navigate('workbench');
+  }, [auth?.principal.subject]);
   const navigate = (next: View) => {
     markVisited(next);
     location.hash = next;
@@ -63,6 +80,12 @@ export default function App() {
     setNavOpen(false);
   };
   const current = view === 'shop' ? { name: '数码旗舰店' } : views.find((v) => v.id === view)!;
+  const visibleViews =
+    backendChatEnabled && auth
+      ? views.filter((item) =>
+          auth.principal.role === 'staff' ? item.id !== 'chat' : item.id === 'chat',
+        )
+      : views;
   const openShop = () => {
     if (view !== 'shop') setShopOrigin(view);
     navigate('shop');
@@ -85,6 +108,9 @@ export default function App() {
   const pending =
     s.requests.filter((r) => r.status === 'pending').length +
     s.conversations.filter((c) => c.mode === 'waiting').length;
+  if (backendChatEnabled && auth === null) {
+    return <Login onAuthenticated={setAuth} />;
+  }
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -132,7 +158,7 @@ export default function App() {
         </button>
         <span className="nav-label">工作空间</span>
         <nav aria-label="主导航">
-          {views.map((v) => (
+          {visibleViews.map((v) => (
             <a
               href={`#${v.id}`}
               className={`nav-item ${view === v.id ? 'active' : ''}`}
@@ -188,7 +214,10 @@ export default function App() {
             <p>模拟业务数据，体验完整服务流程。</p>
             <span className="tiny">固定业务日期 {DEMO_DATE}</span>
           </div>
-          <button className="sidebar-profile" onClick={() => navigate('lab')}>
+          <button
+            className="sidebar-profile"
+            onClick={() => (auth?.principal.role === 'staff' ? navigate('lab') : undefined)}
+          >
             <span className="profile-mark">
               <Sparkles size={18} />
             </span>
@@ -220,7 +249,8 @@ export default function App() {
               模拟数据
             </Badge>
             <span className="header-divider" />
-            {view === 'chat' || (view === 'shop' && shopOrigin !== 'workbench') ? (
+            {!backendChatEnabled &&
+            (view === 'chat' || (view === 'shop' && shopOrigin !== 'workbench')) ? (
               <label className="buyer-switch">
                 <span className="header-avatar">{buyers[s.buyer][0]}</span>
                 <select
@@ -235,10 +265,19 @@ export default function App() {
               </label>
             ) : (
               <span className="header-role">
-                {view === 'workbench' || (view === 'shop' && shopOrigin === 'workbench')
-                  ? '客服小周 · 模拟客服'
-                  : '开发者视图'}
+                {auth?.principal.display_name || (view === 'workbench' ? '客服小周' : '开发者视图')}
               </span>
+            )}
+            {backendChatEnabled && auth && (
+              <button
+                className="text-button"
+                onClick={() => {
+                  void logoutAccount();
+                  setAuth(null);
+                }}
+              >
+                退出登录
+              </button>
             )}
           </div>
         </header>

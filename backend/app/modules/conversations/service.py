@@ -29,6 +29,9 @@ from app.modules.conversations.schemas import (
     ConversationMessage,
     ConversationMode,
     MessageRole,
+    HandoffRequest,
+    StaffModeRequest,
+    StaffReplyRequest,
 )
 
 
@@ -46,6 +49,20 @@ class RuntimeProtocol(Protocol):
         messages: Sequence[BaseMessage],
         config: dict[str, object] | None = None,
     ) -> AsyncIterator[RuntimeStreamEvent]: ...
+
+
+class ConversationStore(Protocol):
+    """会话服务依赖的最小仓库接口。"""
+
+    def add(self, conversation: Conversation) -> Conversation: ...
+
+    def update(self, conversation: Conversation) -> Conversation: ...
+
+    def get(self, conversation_id: UUID) -> Conversation | None: ...
+
+    def list_by_buyer(self, buyer_id: BuyerId) -> list[Conversation]: ...
+
+    def list_all(self) -> list[Conversation]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +114,7 @@ class ConversationService:
 
     def __init__(
         self,
-        repository: ConversationRepository | None = None,
+        repository: ConversationStore | None = None,
         runtime: RuntimeProtocol | None = None,
         runtime_factory: Callable[
             [], RuntimeProtocol
@@ -264,6 +281,7 @@ class ConversationService:
                 model_calls=result.model_calls,
                 tool_rounds=result.tool_rounds,
                 tool_calls=result.tool_calls,
+                query_analysis=result.query_analysis,
             ),
         )
 
@@ -285,6 +303,128 @@ class ConversationService:
 
         return self.repository.list_by_buyer(buyer_id)
 
+    def list_all_conversations(self) -> list[Conversation]:
+        """为已认证客服返回全部会话。"""
+
+        return self.repository.list_all()
+
+    def request_handoff(self, request: HandoffRequest) -> Conversation:
+        """创建或更新一段会话，使其进入等待人工接管状态。"""
+
+        if request.conversation_id is None:
+            current_time = self._clock()
+            conversation = Conversation(
+                id=self._id_factory(),
+                buyer_id=request.buyer_id,
+                title=request.title,
+                mode=ConversationMode.WAITING,
+                messages=[],
+                created_at=current_time,
+                updated_at=current_time,
+            )
+            conversation = self._append_persisted_message(
+                conversation,
+                MessageRole.SYSTEM,
+                "已进入人工服务队列。咨询记录会一并交给客服，自动回复已暂停。",
+            )
+            return self.repository.add(conversation)
+
+        conversation = self.get_conversation(
+            request.conversation_id,
+            request.buyer_id,
+        )
+        if conversation.mode is ConversationMode.CLOSED:
+            raise ConversationUnavailableError("已结束的会话不能申请人工接管")
+        if conversation.mode in {ConversationMode.WAITING, ConversationMode.HUMAN}:
+            return conversation
+
+        updated = conversation.model_copy(update={"mode": ConversationMode.WAITING})
+        updated = self._append_persisted_message(
+            updated,
+            MessageRole.SYSTEM,
+            "已进入人工服务队列。咨询记录会一并交给客服，自动回复已暂停。",
+        )
+        return self.repository.update(updated)
+
+    def change_service_mode(
+        self,
+        conversation_id: UUID,
+        request: StaffModeRequest,
+    ) -> Conversation:
+        """由客服接管、恢复 AI 或结束一段会话。"""
+
+        conversation = self.repository.get(conversation_id)
+        if conversation is None:
+            raise ConversationNotFoundError(f"未找到会话：{conversation_id}")
+        if conversation.mode is ConversationMode.CLOSED:
+            raise ConversationUnavailableError("已结束的会话不能再次修改状态")
+
+        target_mode = ConversationMode(request.mode)
+        allowed_modes = {
+            ConversationMode.WAITING: {ConversationMode.HUMAN},
+            ConversationMode.HUMAN: {ConversationMode.AI, ConversationMode.CLOSED},
+            ConversationMode.AI: {ConversationMode.HUMAN},
+        }
+        if target_mode not in allowed_modes.get(conversation.mode, set()):
+            raise ConversationUnavailableError(
+                f"会话不能从 {conversation.mode.value} 切换到 {target_mode.value}"
+            )
+
+        messages = {
+            ConversationMode.HUMAN: f"{request.staff_id} 已接入，会继续为你处理。",
+            ConversationMode.AI: "客服已恢复 AI 服务，智能客服继续为你解答。",
+            ConversationMode.CLOSED: "本次人工服务已结束。你可以开始新会话。",
+        }
+        updated = conversation.model_copy(update={"mode": target_mode})
+        updated = self._append_persisted_message(
+            updated,
+            MessageRole.SYSTEM,
+            messages[target_mode],
+        )
+        return self.repository.update(updated)
+
+    def add_staff_reply(
+        self,
+        conversation_id: UUID,
+        request: StaffReplyRequest,
+    ) -> Conversation:
+        """在人工服务状态下保存一条客服回复。"""
+
+        conversation = self.repository.get(conversation_id)
+        if conversation is None:
+            raise ConversationNotFoundError(f"未找到会话：{conversation_id}")
+        if conversation.mode is not ConversationMode.HUMAN:
+            raise ConversationUnavailableError("只有人工服务中的会话可以发送客服回复")
+
+        updated = self._append_persisted_message(
+            conversation,
+            MessageRole.STAFF,
+            request.message,
+        )
+        return self.repository.update(updated)
+
+    def _append_persisted_message(
+        self,
+        conversation: Conversation,
+        role: MessageRole,
+        content: str,
+    ) -> Conversation:
+        """追加一条带稳定时间和编号的消息，并更新会话时间。"""
+
+        created_at = max(self._clock(), conversation.updated_at)
+        message = ConversationMessage(
+            id=self._id_factory(),
+            role=role,
+            content=content,
+            created_at=created_at,
+        )
+        return conversation.model_copy(
+            update={
+                "messages": [*conversation.messages, message],
+                "updated_at": created_at,
+            }
+        )
+
     @staticmethod
     def _runtime_config(
         conversation_id: UUID,
@@ -293,7 +433,10 @@ class ConversationService:
         """创建一次客服运行使用的 LangGraph 配置。"""
 
         return {
-            "configurable": {"thread_id": str(conversation_id)},
+            "configurable": {
+                "thread_id": str(conversation_id),
+                "buyer_id": buyer_id,
+            },
             "tags": ["customer-service", str(buyer_id)],
         }
 
@@ -307,6 +450,21 @@ class ConversationService:
             delta = ChatStreamDelta(content=event.text)
             return ConversationStreamEvent(name="delta", data=delta)
 
+        if event.type == "router_start":
+            status_data = ChatStreamStatus(
+                phase="router",
+                state="started",
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type == "router_end" and event.query_analysis is not None:
+            status_data = ChatStreamStatus(
+                phase="router",
+                state="completed",
+                query_analysis=event.query_analysis,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
         if event.type == "model_start":
             status_data = ChatStreamStatus(
                 phase="model",
@@ -319,6 +477,7 @@ class ConversationService:
                 phase="tool",
                 state="started",
                 tool_calls=event.tool_calls,
+                tool_names=list(event.tool_names),
             )
             return ConversationStreamEvent(name="status", data=status_data)
 
@@ -327,6 +486,8 @@ class ConversationService:
                 phase="tool",
                 state="completed",
                 tool_calls=event.tool_calls,
+                tool_names=list(event.tool_names),
+                tool_results=list(event.tool_results),
             )
             return ConversationStreamEvent(name="status", data=status_data)
 

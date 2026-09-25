@@ -1,11 +1,15 @@
 """供大模型调用的商品搜索与商品详情工具。"""
 
+from functools import lru_cache
 from typing import Any, Literal, Self
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.db.initialize import initialize_database
+from app.db.session import get_session_factory
+from app.modules.catalog.repository import SqlProductRepository
 from app.modules.catalog.schemas import (
     Product,
     ProductCategory,
@@ -109,7 +113,13 @@ class GetProductResult(BaseModel):
         return self
 
 
-_product_service = ProductService()
+@lru_cache(maxsize=1)
+def get_product_service() -> ProductService:
+    """延迟创建数据库商品服务，避免导入模块时执行迁移。"""
+
+    initialize_database()
+    repository = SqlProductRepository(get_session_factory())
+    return ProductService(repository)
 
 
 @tool("search_products", args_schema=SearchProductsInput)
@@ -124,7 +134,8 @@ def search_products(
 ) -> dict[str, Any]:
     """搜索店内商品。需要推荐、比较、查询价格库存或按条件选购时使用。"""
 
-    result = _product_service.search_products(
+    service = get_product_service()
+    result = service.search_products(
         ProductSearchParams(
             keyword=keyword,
             category=category,
@@ -150,7 +161,8 @@ def get_product(product_id: str) -> dict[str, Any]:
     """按商品编号查询完整详情。用户追问某件商品的规格或库存时使用。"""
 
     try:
-        product = _product_service.get_product(product_id)
+        service = get_product_service()
+        product = service.get_product(product_id)
     except ProductNotFoundError as exc:
         return GetProductResult(
             success=False,

@@ -4,8 +4,9 @@
 Demo，以及使用 FastAPI、LangChain、LangGraph、真实模型和模拟商品数据开发的
 第一阶段后端。
 
-前端普通对话和商品咨询默认连接后端 `/api/chat/stream` 和 LangGraph；订单、售后、人工接管及评测
-仍使用浏览器模拟数据和脚本。
+前端数码旗舰店通过 `/api/products` 读取商品，客服对话通过 `/api/chat/stream` 连接
+LangGraph。用户 Query 会先经过文本规范化、本地中文 Embedding 语义路由、实体提取和业务 Query
+整理，再进入模型与工具循环；售后、人工接管、知识检索与评测均已接入后端。
 
 ## 本地运行
 
@@ -19,14 +20,17 @@ npm ci
 npm run dev
 ```
 
-打开 [买家客服](http://127.0.0.1:5173/#chat)。商品咨询需要同时启动后端，并在
-`backend/.env` 中配置模型；密钥不会发送给浏览器。
+打开 [买家客服](http://127.0.0.1:5173/#chat)。浏览数码旗舰店和使用商品咨询都需要
+同时启动后端；商品咨询还需要在 `backend/.env` 中配置模型，密钥不会发送给浏览器。
 
 后端在另一个终端运行：
 
 ```powershell
 cd backend
 uv sync --dev --no-cache
+cd infrastructure/milvus
+docker compose up -d
+cd ../..
 uv run --no-cache uvicorn app.main:app --reload
 ```
 
@@ -77,23 +81,37 @@ npm run format:check
 
 - React + TypeScript + Vite，使用 Tailwind CSS 构建集成及自定义工作台样式。
 - 12 个虚构商品、5 笔订单、2 位模拟买家，固定业务日期为 2026-09-15。
-- 普通对话和商品咨询通过 SSE 接收真实 LangGraph 文本片段与商品工具进度；“你是谁”“你好”和不含商品关键词的追问也会请求后端。
-- 订单、售后、人工工作台和评测仍由浏览器共享状态驱动，使用 localStorage 保存。
+- 数码旗舰店的列表、搜索、分类、价格、库存、排序和详情均调用后端商品接口，包含加载、空结果、失败及重试状态。
+- 普通对话、商品咨询、订单和物流查询通过 SSE 接收真实 LangGraph 文本片段与工具进度。
+- Agent 处理过程按“语义分流 Router → 工具 → 汇总”展示；Router 和工具卡均使用后端 SSE 返回的真实执行结果。
+- 售后提交与审核、转人工、客服接管、人工回复、恢复 AI 和结束服务均调用后端接口。
+- 前端通过 SSE 订阅会话快照；会话变化由服务端主动推送，客服工作台无需定时轮询或手动刷新。
+- 买家只订阅自己的会话；客服使用客服令牌订阅全部工作台会话和待审售后队列。
+- 买家 A、买家 B 和客服使用数据库账号、Argon2 密码哈希、短期 Bearer 令牌和可轮换刷新令牌；后端按令牌角色和买家编号校验接口权限。
+- 独立登录页按身份开放工作空间：买家进入聊天与商城，客服进入人工服务和审核工作台；刷新页面可恢复当前会话登录态。
 - 先确认申请再提交，客服审批与买家确认分别呈现。批准不表示退款到账。
 - 人工接管、停止输出和切换买家会中断相应自动处理，防止迟到的自动回复。
 
 后端：
 
 - FastAPI 健康检查、商品列表和商品详情接口。
-- Pydantic 商品格式、本地 JSON 仓库、商品筛选、排序和分页服务。
+- Pydantic 商品格式、SQLAlchemy 商品仓库、商品筛选、排序和分页服务；JSON 仅作为首次初始化种子。
 - 可供模型调用的商品搜索与详情工具。
 - 支持 OpenAI 和 OpenAI 兼容服务的模型客户端。
-- 使用 LangGraph 编排模型节点、商品工具节点和最终客服回复。
+- 使用 LangGraph 编排 Query 预处理、模型、商品／订单／售后／知识工具和最终客服回复。
+- 使用本地 `BAAI/bge-small-zh-v1.5` ONNX Embedding 完成语义意图路由，并为 RAG 文档和 Query 生成 512 维真实语义向量。
 - 会话、消息、聊天请求与响应的数据格式。
-- 内存会话仓库和服务，支持买家隔离、历史消息转换、失败回滚和同会话串行处理。
+- SQLAlchemy 会话仓库和服务，支持重启恢复、买家隔离、历史消息转换、失败回滚和同会话串行处理。
 - 聊天、会话列表和会话详情接口。
 - 后端允许本地前端跨端口访问，模型密钥只保存在后端。
-- 116 项后端测试；MCP、RAG、订单和售后后端尚未实现。
+- SQLite、SQLAlchemy 和 Alembic 数据库基础，包含商品、会话、消息、订单和物流表。
+- 订单列表、详情和物流接口，订单归属校验，以及绑定当前会话买家身份的 LangGraph 订单工具。
+- 售后草稿、修改、取消、幂等提交、待审队列、人工批准／拒绝和操作记录接口。
+- Markdown 知识库、Milvus 增量向量索引和 `search_knowledge` 混合检索工具已接入 LangGraph，回复会展示真实文档与章节来源。
+- RAG 默认使用本地 BGE 中文语义向量，同时保留离线特征哈希测试实现和 OpenAI Embedding Provider；评测覆盖 Recall@K、MRR、拒答率、检索延迟、回答正确性、忠实度、完整性和引用准确率。
+- 客服可在“开发者与评测”页面运行真实检索评测并查看每条案例的召回来源与通过状态。
+- Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
+- 165 项后端测试。
 
 ## 代码导览
 
@@ -110,36 +128,69 @@ frontend/
     Shop.tsx             全店陈列、搜索筛选、商品详情及咨询／回复引用
     shop.css             店铺陈列与移动端布局
     components.tsx       商品／订单／申请卡片、确认弹窗、资料与轨迹
-    api.ts              聊天接口请求、响应类型和错误处理
-    data.ts              商品、订单和店铺规则
+    api.ts              商品、聊天、售后接口请求、响应类型和错误处理
+    data.ts              尚未迁移的订单、店铺规则及前端演示商品快照
     types.ts             前端业务状态类型
-    store.ts             前后端聊天分流、浏览器状态、取消机制和审批流转
+    store.ts             前后端分流、浏览器状态、售后同步和审批流转
     styles.css           工作台主题与响应式布局
   tests/demo.spec.ts      浏览器交互回归测试
-  tests/shop.spec.ts      商品陈列与客服往返流程测试
-  tests/backend-chat.spec.ts 普通对话、连续追问、错误重试、会话恢复和停止请求测试
+  tests/shop.spec.ts      商品接口、陈列、详情与客服往返流程测试
+  tests/backend-chat.spec.ts 对话、错误恢复、停止请求及真实售后接口联调测试
 backend/
   README.md               后端进度、架构、全部文件职责和运行方式
   app/main.py             FastAPI 应用入口
+  app/db/                 数据库连接、迁移初始化和演示数据导入
   app/ai/model_client.py  模型连接、工具绑定和调用边界
+  app/ai/query_preprocessor.py Query 清洗、语义意图路由、上下文补全和实体提取
   app/ai/runtime.py       LangGraph 客服运行图
   app/ai/tools/catalog.py AI 商品搜索与详情工具
+  app/ai/tools/orders.py  AI 订单与物流查询工具
+  app/ai/tools/after_sales.py AI 售后查询与待确认草稿工具
   app/modules/catalog/    商品格式、仓库、服务和接口
-  app/modules/conversations/ 会话格式、内存仓库和 AI 聊天服务
-  data/seed/products.json 后端模拟商品数据
+  app/modules/conversations/ 会话格式、数据库仓库和 AI 聊天服务
+  app/modules/orders/     订单格式、数据库仓库、归属规则和接口
+  app/modules/after_sales/ 售后状态、幂等提交、审核和操作记录
+  app/modules/auth/       用户与刷新令牌表、Argon2 密码、登录服务和角色权限依赖
+  app/modules/knowledge/  Markdown 加载、Milvus 向量存储、混合检索和调试接口
+  infrastructure/milvus/ Milvus Standalone 官方 Docker Compose 配置
+  alembic/                数据库结构迁移及版本记录
+  data/seed/products.json 首次初始化使用的模拟商品种子
+  data/seed/orders.json   订单归属与物流场景种子
+  data/knowledge/         退换货、保修、物流、支付和使用说明知识文档
+  data/evaluation/        RAG 问题、正确来源、参考答案和外部评测数据
+  scripts/evaluate_rag.py 运行真实 BGE、Milvus 与聊天模型的 RAG 评测
+  data/intents/routes.json 商品、订单、售后、知识与人工服务的语义路由样本
+  data/app.db             本地 SQLite 数据库，不提交到 Git
   tests/                  后端自动化测试
 ```
 
-商品咨询数据流是：**用户消息 → `/api/chat/stream` → 会话服务 → LangGraph 模型节点
-→ SSE 文本片段 → 商品工具节点 → 模拟商品数据 → 模型最终回复 → 保存会话**。
+商品咨询数据流是：**用户消息 → `/api/chat/stream` → 会话服务 → Query 规范化与语义路由
+→ LangGraph 模型节点 → SSE 文本片段 → 商品工具节点 → 商品数据 → 模型最终回复 → 保存会话**。
 
-订单与售后数据流仍是：**用户交互 → 模拟脚本选择场景 → 模拟查询事件 → 更新会话
-或申请状态 → 相关页面同步展示**。
+商城数据流是：**商城搜索或筛选 → `/api/products` → 商品服务 → 后端商品数据 → 页面陈列；
+点击商品 → `/api/products/{product_id}` → 商品详情**。商城和 AI 商品工具由同一个后端
+商品模块提供数据。`frontend/src/data.ts` 中暂时保留商品与订单快照，供脚本演示模式和
+售后卡片展示使用；订单卡片完成后端数据适配后再移除。
+
+订单数据流是：**用户消息 → `/api/chat/stream` → LangGraph → 订单工具读取服务端买家身份
+→ 订单服务校验归属 → 数据库订单与物流 → 模型回复**。
+
+售后数据流是：**页面生成待确认内容 → `/api/after-sales/drafts` 创建后端草稿
+→ 携带幂等键确认提交 → 客服工作台同步待审申请 → 按版本批准／拒绝
+→ 保存操作记录并更新买家页面**。页面会显示提交中与失败信息，重复点击由前端请求锁和
+后端幂等提交共同保护。
 
 商品图片使用内置 imagegen 生成，仅作外观示意；素材路径和完整提示词见 [商品素材记录](docs/catalog-assets.md)。
 
-模拟身份切换和前端归属判断不是生产认证或后端安全隔离。前端业务数据仍只保存在
-当前浏览器，不适用于真实客户数据。项目尚未建立真实 Agent 评测集，也没有完整的
-模型效果指标。
+当前登录页会使用三个数据库演示账号获取短期签名令牌，密码使用 Argon2 保存，刷新令牌
+只以 SHA-256 摘要保存并在每次刷新后轮换。演示密码仍由前端配置提供，只适合本地演示；
+正式部署应将令牌改用 HttpOnly Cookie 或成熟身份服务。页面会话关联和评测状态仍保存在当前浏览器。项目尚未建立真实 Agent
+评测集，也没有完整的模型效果指标。
 
-下一阶段是逐步实现订单、售后和人工接管后端，再把内存会话替换为数据库持久化。
+SQLite、SQLAlchemy 和 Alembic 数据库基础已经完成，商品、会话、消息、订单和售后申请
+已迁入数据库。当前会话同步使用 SSE 服务端推送；浏览器断线时由 EventSource 自动重连。
+部署时可通过 `DATABASE_URL` 切换为 PostgreSQL。
+
+知识正文和内容哈希保存在关系数据库中，知识向量保存在 Milvus。Windows 不支持原生
+Milvus Lite，本项目使用 Docker Desktop 启动 Milvus Standalone；生产环境可以只修改
+`MILVUS_URI` 和 `MILVUS_TOKEN`，连接 Milvus 集群或 Zilliz Cloud。

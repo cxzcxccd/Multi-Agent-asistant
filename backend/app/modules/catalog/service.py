@@ -1,7 +1,17 @@
 """商品搜索、价格、库存和详情业务规则。"""
 
+from typing import Protocol
+
 from app.modules.catalog.repository import ProductRepository
 from app.modules.catalog.schemas import Product, ProductListResponse, ProductSearchParams
+
+
+class ProductReader(Protocol):
+    """商品服务依赖的最小仓库接口。"""
+
+    def list_products(self) -> list[Product]: ...
+
+    def get_product(self, product_id: str) -> Product | None: ...
 
 
 class ProductNotFoundError(LookupError):
@@ -15,7 +25,7 @@ class ProductNotFoundError(LookupError):
 class ProductService:
     """为商品接口和 AI 工具提供统一的只读查询规则。"""
 
-    def __init__(self, repository: ProductRepository | None = None) -> None:
+    def __init__(self, repository: ProductReader | None = None) -> None:
         self.repository = repository or ProductRepository()
 
     def search_products(

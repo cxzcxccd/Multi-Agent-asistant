@@ -180,7 +180,10 @@ def test_service_creates_conversation_and_saves_two_messages() -> None:
     assert runtime.calls[0][0][-1].content == "推荐三百元以内的耳机"
     config = runtime.calls[0][1]
     assert config is not None
-    assert config["configurable"] == {"thread_id": str(conversation_id)}
+    assert config["configurable"] == {
+        "thread_id": str(conversation_id),
+        "buyer_id": "A",
+    }
 
 
 def test_service_continues_conversation_with_relevant_history() -> None:

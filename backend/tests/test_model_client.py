@@ -132,7 +132,17 @@ def test_create_model_client_builds_openai_model_and_binds_catalog_tools(
         "timeout": 30.0,
         "max_retries": 2,
     }
-    assert [tool.name for tool in client.tools] == ["search_products", "get_product"]
+    assert [tool.name for tool in client.tools] == [
+        "search_products",
+        "get_product",
+        "list_orders",
+        "get_order",
+        "get_logistics",
+        "list_after_sales",
+        "get_after_sale",
+        "prepare_after_sale_draft",
+        "search_knowledge",
+    ]
     assert fake_model.bound_tools == list(client.tools)
 
 

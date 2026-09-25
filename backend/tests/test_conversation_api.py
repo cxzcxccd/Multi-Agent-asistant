@@ -9,10 +9,28 @@ from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage
 
 from app.ai.runtime import RuntimeResult, RuntimeStreamEvent
+from app.ai.query_preprocessor import create_fallback_query_preprocessor
 from app.main import app
+from app.modules.auth.schemas import Principal
+from app.modules.auth.security import create_access_token
 from app.modules.conversations.router import get_conversation_service
 from app.modules.conversations.schemas import ConversationMode
 from app.modules.conversations.service import ConversationService
+
+
+BUYER_TOKEN = create_access_token(
+    Principal(subject="buyer_a", display_name="林同学", role="buyer", buyer_id="A")
+)
+BUYER_B_HEADERS = {
+    "Authorization": "Bearer "
+    + create_access_token(
+        Principal(subject="buyer_b", display_name="陈同学", role="buyer", buyer_id="B")
+    )
+}
+STAFF_HEADERS = {
+    "Authorization": "Bearer "
+    + create_access_token(Principal(subject="staff", display_name="客服小周", role="staff"))
+}
 
 
 class ReplyRuntime:
@@ -24,12 +42,14 @@ class ReplyRuntime:
         config: dict[str, object] | None = None,
     ) -> RuntimeResult:
         reply = AIMessage(content=f"收到：{messages[-1].content}")
+        query_analysis = create_fallback_query_preprocessor().analyze(messages)
         return RuntimeResult(
             reply=reply,
             messages=tuple([*messages, reply]),
             model_calls=1,
             tool_rounds=0,
             tool_calls=0,
+            query_analysis=query_analysis,
         )
 
     async def astream(
@@ -40,6 +60,11 @@ class ReplyRuntime:
         """按两个文本片段返回一轮完整的模型运行。"""
 
         result = await self.ainvoke(messages, config=config)
+        yield RuntimeStreamEvent(type="router_start")
+        yield RuntimeStreamEvent(
+            type="router_end",
+            query_analysis=result.query_analysis,
+        )
         yield RuntimeStreamEvent(type="model_start")
         yield RuntimeStreamEvent(type="delta", text="收到：")
         yield RuntimeStreamEvent(
@@ -62,6 +87,7 @@ async def conversation_client() -> AsyncIterator[
         async with AsyncClient(
             transport=transport,
             base_url="http://test",
+            headers={"Authorization": f"Bearer {BUYER_TOKEN}"},
         ) as client:
             yield client, service
     finally:
@@ -82,11 +108,12 @@ def test_chat_creates_and_continues_a_conversation() -> None:
             assert created_body["assistant_message"]["content"] == (
                 "收到：推荐一款耳机"
             )
-            assert created_body["run"] == {
-                "model_calls": 1,
-                "tool_rounds": 0,
-                "tool_calls": 0,
-            }
+            assert created_body["run"]["model_calls"] == 1
+            assert created_body["run"]["tool_rounds"] == 0
+            assert created_body["run"]["tool_calls"] == 0
+            assert created_body["run"]["query_analysis"]["primary_intent"] == (
+                "product_inquiry"
+            )
 
             continued = await client.post(
                 "/api/chat",
@@ -126,6 +153,8 @@ def test_chat_stream_returns_named_sse_events_and_saves_messages() -> None:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             assert "event: start\n" in response.text
+            assert '"phase":"router"' in response.text
+            assert '"primary_intent":"general_conversation"' in response.text
             assert response.text.count("event: delta\n") == 2
             assert "event: complete\n" in response.text
 
@@ -139,13 +168,70 @@ def test_chat_stream_returns_named_sse_events_and_saves_messages() -> None:
     asyncio.run(run_scenario())
 
 
+def test_handoff_staff_reply_restore_ai_and_close() -> None:
+    async def run_scenario() -> None:
+        async with conversation_client() as (client, _) :
+            handoff = await client.post(
+                "/api/handoff",
+                json={"buyer_id": "A", "title": "需要人工帮助"},
+            )
+            assert handoff.status_code == 200
+            conversation_id = handoff.json()["id"]
+            assert handoff.json()["mode"] == "waiting"
+
+            takeover = await client.post(
+                f"/api/staff/conversations/{conversation_id}/mode",
+                json={"staff_id": "客服小周", "mode": "human"},
+                headers=STAFF_HEADERS,
+            )
+            assert takeover.status_code == 200
+            assert takeover.json()["mode"] == "human"
+
+            reply = await client.post(
+                f"/api/staff/conversations/{conversation_id}/messages",
+                json={"staff_id": "客服小周", "message": "你好，我来协助处理。"},
+                headers=STAFF_HEADERS,
+            )
+            assert reply.status_code == 200
+            assert reply.json()["messages"][-1]["role"] == "staff"
+
+            restore = await client.post(
+                f"/api/staff/conversations/{conversation_id}/mode",
+                json={"staff_id": "客服小周", "mode": "ai"},
+                headers=STAFF_HEADERS,
+            )
+            assert restore.status_code == 200
+            assert restore.json()["mode"] == "ai"
+
+            takeover_again = await client.post(
+                f"/api/staff/conversations/{conversation_id}/mode",
+                json={"staff_id": "客服小周", "mode": "human"},
+                headers=STAFF_HEADERS,
+            )
+            assert takeover_again.status_code == 200
+
+            closed = await client.post(
+                f"/api/staff/conversations/{conversation_id}/mode",
+                json={"staff_id": "客服小周", "mode": "closed"},
+                headers=STAFF_HEADERS,
+            )
+            assert closed.status_code == 200
+            assert closed.json()["mode"] == "closed"
+
+    asyncio.run(run_scenario())
+
+
 def test_conversation_list_is_isolated_by_buyer() -> None:
     async def run_scenario() -> None:
         async with conversation_client() as (client, _service):
             for buyer_id in ("A", "B"):
+                headers = None
+                if buyer_id == "B":
+                    headers = BUYER_B_HEADERS
                 response = await client.post(
                     "/api/chat",
                     json={"buyer_id": buyer_id, "message": f"{buyer_id} 的咨询"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
 
@@ -172,20 +258,21 @@ def test_conversation_endpoints_return_expected_errors() -> None:
             forbidden = await client.get(
                 f"/api/conversations/{conversation_id}",
                 params={"buyer_id": "B"},
+                headers=BUYER_B_HEADERS,
             )
             missing = await client.get(
                 "/api/conversations/00000000-0000-0000-0000-000000000000",
                 params={"buyer_id": "A"},
             )
-            invalid_buyer = await client.get(
+            unauthenticated = await client.get(
                 "/api/conversations",
-                params={"buyer_id": "C"},
+                headers={"Authorization": ""},
             )
 
             assert forbidden.status_code == 403
             assert forbidden.json() == {"detail": "无权访问其他买家的会话"}
             assert missing.status_code == 404
-            assert invalid_buyer.status_code == 422
+            assert unauthenticated.status_code == 401
 
     asyncio.run(run_scenario())
 

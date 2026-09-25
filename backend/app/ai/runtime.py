@@ -1,6 +1,7 @@
-"""使用 LangGraph 编排模型与商品工具的客服运行时。"""
+"""使用 LangGraph 编排模型与业务工具的客服运行时。"""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableConfig, RunnableLambda
@@ -23,6 +25,12 @@ from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.ai.model_client import ModelClient, create_model_client
+from app.ai.query_preprocessor import (
+    QueryAnalysis,
+    QueryPreprocessor,
+    create_fallback_query_preprocessor,
+    create_query_preprocessor,
+)
 
 
 DEFAULT_PROMPT_PATH = (
@@ -34,6 +42,7 @@ class CustomerServiceState(TypedDict):
     """在 LangGraph 节点之间传递的客服状态。"""
 
     messages: Annotated[list[AnyMessage], add_messages]
+    query_analysis: QueryAnalysis | None
     model_calls: int
     tool_rounds: int
     tool_calls: int
@@ -48,15 +57,27 @@ class RuntimeResult:
     model_calls: int
     tool_rounds: int
     tool_calls: int
+    query_analysis: QueryAnalysis | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStreamEvent:
     """客服运行过程中发送给上层的单个流式事件。"""
 
-    type: Literal["model_start", "delta", "tool_start", "tool_end", "complete"]
+    type: Literal[
+        "router_start",
+        "router_end",
+        "model_start",
+        "delta",
+        "tool_start",
+        "tool_end",
+        "complete",
+    ]
     text: str = ""
+    query_analysis: QueryAnalysis | None = None
     tool_calls: int = 0
+    tool_names: tuple[str, ...] = ()
+    tool_results: tuple[dict[str, Any], ...] = ()
     result: RuntimeResult | None = None
 
 
@@ -99,11 +120,12 @@ def load_customer_service_prompt() -> str:
 
 
 class CustomerServiceRuntime:
-    """运行模型节点和商品工具节点组成的 LangGraph 状态图。"""
+    """运行模型节点和业务工具节点组成的 LangGraph 状态图。"""
 
     def __init__(
         self,
         model_client: ModelClient,
+        query_preprocessor: QueryPreprocessor | None = None,
         system_prompt: str | None = None,
         max_tool_rounds: int = 4,
     ) -> None:
@@ -115,6 +137,9 @@ class CustomerServiceRuntime:
             raise RuntimeConfigurationError("客服系统提示词不能为空")
 
         self._model_client = model_client
+        self._query_preprocessor = (
+            query_preprocessor or create_fallback_query_preprocessor()
+        )
         self._system_prompt = prompt or load_customer_service_prompt()
         self._max_tool_rounds = max_tool_rounds
         self._tool_node = ToolNode(
@@ -214,9 +239,13 @@ class CustomerServiceRuntime:
                 await graph_task
 
     def _build_graph(self) -> Any:
-        """创建“模型—工具—模型”的状态图。"""
+        """创建“Query 预处理—模型—工具—模型”的状态图。"""
 
         builder = StateGraph(CustomerServiceState)
+        builder.add_node(
+            "preprocess",
+            RunnableLambda(self._preprocess_query, afunc=self._apreprocess_query),
+        )
         builder.add_node(
             "model",
             RunnableLambda(self._call_model, afunc=self._acall_model),
@@ -225,7 +254,8 @@ class CustomerServiceRuntime:
             "tools",
             RunnableLambda(self._call_tools, afunc=self._acall_tools),
         )
-        builder.add_edge(START, "model")
+        builder.add_edge(START, "preprocess")
+        builder.add_edge("preprocess", "model")
         builder.add_conditional_edges(
             "model",
             self._route_after_model,
@@ -234,6 +264,42 @@ class CustomerServiceRuntime:
         builder.add_edge("tools", "model")
         return builder.compile()
 
+    def _preprocess_query(
+        self,
+        state: CustomerServiceState,
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """同步规范化 Query，并完成语义意图识别和实体提取。"""
+
+        del config
+        analysis = self._query_preprocessor.analyze(state["messages"])
+        return {"query_analysis": analysis}
+
+    async def _apreprocess_query(
+        self,
+        state: CustomerServiceState,
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """在线程池执行本地向量推理，避免阻塞 FastAPI 事件循环。"""
+
+        callback = self._get_stream_callback(config)
+        if callback is not None:
+            await callback(RuntimeStreamEvent(type="router_start"))
+
+        analysis = await asyncio.to_thread(
+            self._query_preprocessor.analyze,
+            state["messages"],
+        )
+
+        if callback is not None:
+            await callback(
+                RuntimeStreamEvent(
+                    type="router_end",
+                    query_analysis=analysis,
+                )
+            )
+        return {"query_analysis": analysis}
+
     def _call_model(
         self,
         state: CustomerServiceState,
@@ -241,10 +307,8 @@ class CustomerServiceRuntime:
     ) -> dict[str, Any]:
         """同步执行模型节点。"""
 
-        response = self._model_client.invoke(
-            [SystemMessage(content=self._system_prompt), *state["messages"]],
-            config=config,
-        )
+        messages = self._messages_for_model(state)
+        response = self._model_client.invoke(messages, config=config)
         self._validate_model_response(response)
         return {
             "messages": [response],
@@ -258,7 +322,7 @@ class CustomerServiceRuntime:
     ) -> dict[str, Any]:
         """异步执行模型节点。"""
 
-        messages = [SystemMessage(content=self._system_prompt), *state["messages"]]
+        messages = self._messages_for_model(state)
         callback = self._get_stream_callback(config)
 
         if callback is None:
@@ -303,6 +367,7 @@ class CustomerServiceRuntime:
 
         last_message = state["messages"][-1]
         requested_tool_count = self._count_requested_tools(last_message)
+        requested_tool_names = self._requested_tool_names(last_message)
         callback = self._get_stream_callback(config)
 
         if callback is not None:
@@ -310,16 +375,20 @@ class CustomerServiceRuntime:
                 RuntimeStreamEvent(
                     type="tool_start",
                     tool_calls=requested_tool_count,
+                    tool_names=requested_tool_names,
                 )
             )
 
         result = await self._tool_node.ainvoke(state, config=config)
+        tool_results = self._stream_tool_results(last_message, result["messages"])
 
         if callback is not None:
             await callback(
                 RuntimeStreamEvent(
                     type="tool_end",
                     tool_calls=requested_tool_count,
+                    tool_names=requested_tool_names,
+                    tool_results=tool_results,
                 )
             )
 
@@ -376,6 +445,43 @@ class CustomerServiceRuntime:
             )
         return "tools"
 
+    def _messages_for_model(
+        self,
+        state: CustomerServiceState,
+    ) -> list[BaseMessage]:
+        """构造模型输入，并保留原始消息供会话持久化。"""
+
+        analysis = state.get("query_analysis")
+        if analysis is None:
+            raise RuntimeErrorBase("Query 预处理节点没有返回分析结果")
+
+        conversation_messages = list(state["messages"])
+        for index in range(len(conversation_messages) - 1, -1, -1):
+            message = conversation_messages[index]
+            if not isinstance(message, HumanMessage):
+                continue
+            conversation_messages[index] = message.model_copy(
+                update={"content": analysis.normalized_query}
+            )
+            break
+
+        route_context = self._format_route_context(analysis)
+        return [
+            SystemMessage(content=self._system_prompt),
+            SystemMessage(content=route_context),
+            *conversation_messages,
+        ]
+
+    @staticmethod
+    def _format_route_context(analysis: QueryAnalysis) -> str:
+        """把结构化预处理结果转换为简短的模型辅助上下文。"""
+
+        return (
+            "以下是系统对当前 Query 的预处理结果，仅作为工具选择辅助；"
+            "如与用户原话冲突，以用户原话为准。\n"
+            f"{analysis.optimized_query}"
+        )
+
     def _validate_messages(
         self,
         messages: Sequence[BaseMessage],
@@ -407,6 +513,54 @@ class CustomerServiceRuntime:
         return len(message.tool_calls) if isinstance(message, AIMessage) else 0
 
     @staticmethod
+    def _requested_tool_names(message: AnyMessage) -> tuple[str, ...]:
+        """按模型请求顺序返回工具名称，供执行轨迹展示。"""
+
+        if not isinstance(message, AIMessage):
+            return ()
+
+        names: list[str] = []
+        for tool_call in message.tool_calls:
+            name = str(tool_call.get("name", "")).strip()
+            if name:
+                names.append(name)
+        return tuple(names)
+
+    @staticmethod
+    def _stream_tool_results(
+        request_message: AnyMessage,
+        result_messages: Sequence[AnyMessage],
+    ) -> tuple[dict[str, Any], ...]:
+        """把 ToolNode 返回消息转换为可通过 SSE 传输的工具结果。"""
+
+        if not isinstance(request_message, AIMessage):
+            return ()
+
+        names_by_call_id: dict[str, str] = {}
+        for tool_call in request_message.tool_calls:
+            call_id = str(tool_call.get("id", ""))
+            name = str(tool_call.get("name", ""))
+            names_by_call_id[call_id] = name
+
+        results: list[dict[str, Any]] = []
+        for message in result_messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            output: Any = message.content
+            if isinstance(output, str):
+                try:
+                    output = json.loads(output)
+                except json.JSONDecodeError:
+                    pass
+            results.append(
+                {
+                    "name": names_by_call_id.get(message.tool_call_id, message.name or "tool"),
+                    "output": output,
+                }
+            )
+        return tuple(results)
+
+    @staticmethod
     def _format_tool_error(_error: Exception) -> str:
         """向模型返回固定错误，避免泄露内部异常和数据路径。"""
 
@@ -421,6 +575,7 @@ class CustomerServiceRuntime:
 
         return {
             "messages": list(messages),
+            "query_analysis": None,
             "model_calls": 0,
             "tool_rounds": 0,
             "tool_calls": 0,
@@ -433,7 +588,7 @@ class CustomerServiceRuntime:
         """设置与工具轮数相匹配的 LangGraph 执行上限。"""
 
         graph_config: RunnableConfig = dict(config or {})
-        graph_config["recursion_limit"] = self._max_tool_rounds * 2 + 4
+        graph_config["recursion_limit"] = self._max_tool_rounds * 2 + 5
         return graph_config
 
     @staticmethod
@@ -471,9 +626,14 @@ class CustomerServiceRuntime:
         if reply.tool_calls:
             raise RuntimeErrorBase("客服运行图结束时仍有未执行的工具调用")
 
+        query_analysis = state.get("query_analysis")
+        if query_analysis is None:
+            raise RuntimeErrorBase("客服运行图缺少 Query 预处理结果")
+
         return RuntimeResult(
             reply=reply,
             messages=messages,
+            query_analysis=query_analysis,
             model_calls=state.get("model_calls", 0),
             tool_rounds=state.get("tool_rounds", 0),
             tool_calls=state.get("tool_calls", 0),
@@ -483,4 +643,9 @@ class CustomerServiceRuntime:
 def create_customer_service_runtime() -> CustomerServiceRuntime:
     """使用当前服务端模型配置创建客服运行时。"""
 
-    return CustomerServiceRuntime(create_model_client())
+    model_client = create_model_client()
+    query_preprocessor = create_query_preprocessor()
+    return CustomerServiceRuntime(
+        model_client=model_client,
+        query_preprocessor=query_preprocessor,
+    )

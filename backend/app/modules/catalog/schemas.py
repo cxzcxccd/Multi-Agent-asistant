@@ -5,8 +5,11 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+# 必须是一个字符串，并且去掉前后空格后，长度至少为 1。
 NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+#必须是字符串，并且必须符合 p + 两位数字 的格式。
 ProductId = Annotated[str, StringConstraints(pattern=r"^p\d{2}$")]
+#这个值只能是指定的三个字符串之一
 ProductSort = Literal["default", "price-asc", "price-desc"]
 
 
@@ -20,7 +23,7 @@ class ProductCategory(StrEnum):
 
 class Product(BaseModel):
     """由商品页面和 AI 商品工具共用的商品记录。"""
-
+    # 禁止用户传入未定义字段，并且所有字符串自动去掉首尾空格。
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     id: ProductId
@@ -49,6 +52,7 @@ class ProductSearchParams(BaseModel):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=50)
 
+    # 当 Pydantic 已经把所有字段都验证完成以后，再额外检查一次：min_price 是否小于等于 max_price
     @model_validator(mode="after")
     def validate_price_range(self) -> Self:
         if (

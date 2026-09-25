@@ -26,14 +26,14 @@ from app.ai.runtime import (
     RuntimeStreamEvent,
     load_customer_service_prompt,
 )
-from app.ai.tools.catalog import get_catalog_tools
+from app.ai.tools import get_customer_service_tools
 
 
 class FakeModelClient:
     """按照预设顺序返回 AI 消息并记录模型输入。"""
 
     def __init__(self, responses: Sequence[AIMessage]) -> None:
-        self.tools = tuple(get_catalog_tools())
+        self.tools = tuple(get_customer_service_tools())
         self._responses = deque(responses)
         self.calls: list[tuple[str, list[BaseMessage], RunnableConfig | None]] = []
 
@@ -101,7 +101,8 @@ def test_runtime_compiles_a_langgraph_with_model_and_tool_nodes() -> None:
 
     graph = runtime.graph.get_graph()
 
-    assert {"model", "tools"}.issubset(graph.nodes)
+    assert {"preprocess", "model", "tools"}.issubset(graph.nodes)
+    assert "preprocess" in graph.draw_mermaid()
     assert "model" in graph.draw_mermaid()
     assert "tools" in graph.draw_mermaid()
 
@@ -143,6 +144,37 @@ def test_runtime_executes_product_tool_and_returns_final_reply() -> None:
     assert len(model_client.calls) == 2
 
 
+def test_runtime_executes_logistics_tool_with_server_buyer_context() -> None:
+    model_client = FakeModelClient(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    make_tool_call(
+                        name="get_logistics",
+                        args={"order_id": "10001"},
+                    )
+                ],
+            ),
+            AIMessage(content="订单正在运输中。"),
+        ]
+    )
+    runtime = CustomerServiceRuntime(model_client)
+
+    result = runtime.invoke(
+        [HumanMessage(content="查询订单 10001 的物流")],
+        config={"configurable": {"buyer_id": "A"}},
+    )
+
+    tool_messages = [
+        message for message in result.messages if isinstance(message, ToolMessage)
+    ]
+    tool_result = json.loads(str(tool_messages[0].content))
+    assert tool_result["success"] is True
+    assert tool_result["logistics"]["status"] == "运输中"
+    assert result.reply.content == "订单正在运输中。"
+
+
 def test_runtime_streams_direct_model_reply() -> None:
     model_client = FakeModelClient([AIMessage(content="你好，我是智能客服。")])
     runtime = CustomerServiceRuntime(model_client)
@@ -160,6 +192,8 @@ def test_runtime_streams_direct_model_reply() -> None:
             delta_text += event.text
 
     assert [event.type for event in events] == [
+        "router_start",
+        "router_end",
         "model_start",
         "delta",
         "delta",
@@ -191,6 +225,8 @@ def test_runtime_streams_tool_progress_before_final_reply() -> None:
     event_types = [event.type for event in events]
 
     assert event_types == [
+        "router_start",
+        "router_end",
         "model_start",
         "tool_start",
         "tool_end",
@@ -199,6 +235,14 @@ def test_runtime_streams_tool_progress_before_final_reply() -> None:
         "delta",
         "complete",
     ]
+    tool_events = [event for event in events if event.type.startswith("tool_")]
+    assert [event.tool_names for event in tool_events] == [
+        ("search_products",),
+        ("search_products",),
+    ]
+    assert tool_events[0].tool_results == ()
+    assert tool_events[1].tool_results[0]["name"] == "search_products"
+    assert tool_events[1].tool_results[0]["output"]["success"] is True
     assert events[-1].result is not None
     assert events[-1].result.model_calls == 2
     assert events[-1].result.tool_calls == 1
@@ -359,4 +403,5 @@ def test_customer_service_prompt_requires_grounded_product_answers() -> None:
 
     assert "必须先调用商品工具" in prompt
     assert "不编造" in prompt
-    assert "转人工客服" in prompt
+    assert "prepare_after_sale_draft" in prompt
+    assert "明确确认后才能提交" in prompt

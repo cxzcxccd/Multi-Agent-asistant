@@ -491,6 +491,10 @@
   border: 1px dashed #dce4f1;
   min-height: 310px;
 }
+.shop-detail-status {
+  min-height: 260px;
+  margin-top: 16px;
+}
 .shop-page .modal:has(.shop-detail) {
   width: min(850px, calc(100% - 32px));
 }

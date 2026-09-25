@@ -13,6 +13,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.ai.query_preprocessor import QueryAnalysis
+
 BuyerId = Literal["A", "B"]
 MessageContent = Annotated[
     str,
@@ -94,6 +96,34 @@ class ChatRequest(BaseModel):
     message: MessageContent
 
 
+class HandoffRequest(BaseModel):
+    """买家申请转人工时提交的数据。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    buyer_id: BuyerId
+    conversation_id: UUID | None = None
+    title: ConversationTitle = "人工服务请求"
+
+
+class StaffModeRequest(BaseModel):
+    """客服改变会话处理状态时提交的数据。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    staff_id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+    mode: Literal["human", "ai", "closed"]
+
+
+class StaffReplyRequest(BaseModel):
+    """人工客服回复会话时提交的数据。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    staff_id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+    message: MessageContent
+
+
 class ChatRunStats(BaseModel):
     """一次 LangGraph 客服运行的调用统计。"""
 
@@ -102,6 +132,7 @@ class ChatRunStats(BaseModel):
     model_calls: int = Field(ge=1)
     tool_rounds: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
+    query_analysis: QueryAnalysis | None = None
 
     @model_validator(mode="after")
     def validate_tool_counts(self) -> Self:
@@ -148,13 +179,16 @@ class ChatStreamStart(BaseModel):
 
 
 class ChatStreamStatus(BaseModel):
-    """模型或商品工具当前执行到的阶段。"""
+    """Query 路由、模型或业务工具当前执行到的阶段。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    phase: Literal["model", "tool"]
+    phase: Literal["router", "model", "tool"]
     state: Literal["started", "completed"]
+    query_analysis: QueryAnalysis | None = None
     tool_calls: int = Field(default=0, ge=0)
+    tool_names: list[str] = Field(default_factory=list)
+    tool_results: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ChatStreamDelta(BaseModel):

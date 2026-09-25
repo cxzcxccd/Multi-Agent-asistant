@@ -1,0 +1,105 @@
+[
+  {
+    "id": "RAG-001",
+    "question": "耳机拆封后还能无理由退货吗？",
+    "expected_sources": [
+      "return_policy.md#七天无理由退货"
+    ],
+    "category": "return_policy",
+    "reference_answer": "拆封本身不直接决定能否退货。签收后7天内，商品完好、配件和包装齐全且不影响二次销售时可以申请；已激活或绑定账号的商品需进一步核实。"
+  },
+  {
+    "id": "RAG-002",
+    "question": "耳机进水了能免费维修吗？",
+    "expected_sources": [
+      "warranty_policy.md#保修范围"
+    ],
+    "category": "warranty_policy",
+    "reference_answer": "耳机进水属于进液造成的人为损坏，不属于默认保修范围，最终结果以检测记录为准。"
+  },
+  {
+    "id": "RAG-003",
+    "question": "售后批准是不是马上就退款到账？",
+    "expected_sources": [
+      "payment_policy.md#退款处理",
+      "payment_policy.md#到账时间"
+    ],
+    "category": "payment_policy",
+    "reference_answer": "售后审核通过不代表退款已经到账。退款流程实际发起后才会原路处理，到账时间取决于支付渠道和银行进度。"
+  },
+  {
+    "id": "RAG-004",
+    "question": "订单还在待发货是什么意思？",
+    "expected_sources": [
+      "shipping_policy.md#发货状态"
+    ],
+    "category": "shipping_policy",
+    "reference_answer": "待发货表示商家仍在准备商品，商品发出后才会生成承运信息。"
+  },
+  {
+    "id": "RAG-005",
+    "question": "物流没有预计时间，什么时候能送到？",
+    "expected_sources": [
+      "shipping_policy.md#预计送达时间"
+    ],
+    "category": "shipping_policy",
+    "reference_answer": "物流没有提供预计送达时间时不能推测具体日期；长时间无更新时应联系人工客服核查。"
+  },
+  {
+    "id": "RAG-006",
+    "question": "蓝牙耳机第一次怎么连接手机？",
+    "expected_sources": [
+      "product_guide.md#蓝牙耳机连接"
+    ],
+    "category": "product_guide",
+    "reference_answer": "先确认耳机有电并进入配对模式，再从手机蓝牙列表选择对应名称；失败时可重启蓝牙并删除旧配对记录后重试。"
+  },
+  {
+    "id": "RAG-007",
+    "question": "100W 充电器一定能让手机满功率充电吗？",
+    "expected_sources": [
+      "product_guide.md#充电设备兼容性"
+    ],
+    "category": "product_guide",
+    "reference_answer": "不能。实际充电功率取决于充电器、线材、设备协议和设备当前状态。"
+  },
+  {
+    "id": "RAG-008",
+    "question": "扩展坞接电脑之前要确认什么？",
+    "expected_sources": [
+      "product_guide.md#扩展坞使用"
+    ],
+    "category": "product_guide",
+    "reference_answer": "购买前应确认电脑型号、接口类型、接口支持的协议以及所需的显示、供电或数据传输功能。"
+  },
+  {
+    "id": "RAG-009",
+    "question": "商品故障申请换货需要提供哪些信息？",
+    "expected_sources": [
+      "return_policy.md#质量问题退换货"
+    ],
+    "category": "return_policy",
+    "reference_answer": "需要填写订单号、故障现象以及期望退货或换货的方式。"
+  },
+  {
+    "id": "RAG-010",
+    "question": "收货时包装破了应该怎么办？",
+    "expected_sources": [
+      "shipping_policy.md#收货检查"
+    ],
+    "category": "shipping_policy",
+    "reference_answer": "应保留包装照片和物流凭证，并及时联系人工客服。"
+  },
+  {
+    "id": "RAG-011",
+    "question": "今天火星天气怎么样？",
+    "expected_sources": [],
+    "reference_answer": "根据现有知识库无法确定。"
+  },
+  {
+    "id": "RAG-012",
+    "question": "帮我预测下周股票价格",
+    "expected_sources": [],
+    "reference_answer": "根据现有知识库无法确定。"
+  }
+]

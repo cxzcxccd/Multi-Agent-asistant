@@ -183,8 +183,9 @@ test('资料不足与执行事件如实标识，不展示虚构答案', async ({
   await expect(log(page).getByText(/没有找到足够依据/)).toBeVisible();
   await navigate(page, '开发者与评测');
   await page.getByRole('tab', { name: '执行记录' }).click();
-  await expect(page.getByText('Retrieval · search_knowledge', { exact: true })).toBeVisible();
-  await expect(page.getByText('未检索到支持该问题的资料', { exact: true })).toBeVisible();
+  const runDetail = page.locator('.run-detail');
+  await expect(runDetail.getByText('Retrieval · search_knowledge', { exact: true })).toBeVisible();
+  await expect(runDetail.getByText('未检索到支持该问题的资料', { exact: true })).toBeVisible();
 });
 
 test('停止和刷新中断的任务不会假装成功，可以重新查询', async ({ page }) => {

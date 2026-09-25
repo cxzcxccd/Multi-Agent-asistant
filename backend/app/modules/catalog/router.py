@@ -11,6 +11,9 @@ from app.modules.catalog.schemas import (
     ProductListResponse,
     ProductSearchParams,
 )
+from app.db.initialize import initialize_database
+from app.db.session import get_session_factory
+from app.modules.catalog.repository import SqlProductRepository
 from app.modules.catalog.service import ProductNotFoundError, ProductService
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -18,9 +21,11 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 @lru_cache(maxsize=1)
 def get_product_service() -> ProductService:
-    """复用商品服务及其已校验的数据缓存。"""
+    """复用连接数据库的商品服务。"""
 
-    return ProductService()
+    initialize_database()
+    repository = SqlProductRepository(get_session_factory())
+    return ProductService(repository)
 
 
 ProductServiceDependency = Annotated[ProductService, Depends(get_product_service)]

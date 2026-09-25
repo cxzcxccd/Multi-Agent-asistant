@@ -4,9 +4,13 @@ import json
 from functools import cached_property
 from json import JSONDecodeError
 from pathlib import Path
+from collections.abc import Callable
 
 from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.modules.catalog.models import ProductRecord
 from app.modules.catalog.schemas import Product
 
 DEFAULT_PRODUCTS_PATH = (
@@ -72,3 +76,47 @@ class ProductRepository:
 
         self.__dict__.pop("_products", None)
         self.__dict__.pop("_products_by_id", None)
+
+
+class SqlProductRepository:
+    """使用 SQLAlchemy 读取已迁移到数据库的商品。"""
+
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
+        self._session_factory = session_factory
+
+    def list_products(self) -> list[Product]:
+        """按商品编号返回全部商品。"""
+
+        with self._session_factory() as session:
+            statement = select(ProductRecord).order_by(ProductRecord.id)
+            records = session.scalars(statement).all()
+            products: list[Product] = []
+            for record in records:
+                products.append(self._to_schema(record))
+            return products
+
+    def get_product(self, product_id: str) -> Product | None:
+        """按商品编号查询；不存在时返回空值。"""
+
+        with self._session_factory() as session:
+            record = session.get(ProductRecord, product_id)
+            if record is None:
+                return None
+            return self._to_schema(record)
+
+    @staticmethod
+    def _to_schema(record: ProductRecord) -> Product:
+        """把数据库记录转换成稳定的商品响应格式。"""
+
+        return Product(
+            id=record.id,
+            name=record.name,
+            category=record.category,
+            series=record.series,
+            price=record.price,
+            stock=record.stock,
+            specs=list(record.specs),
+            description=record.description,
+            color=record.color,
+            source=record.source,
+        )

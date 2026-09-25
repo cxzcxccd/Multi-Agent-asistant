@@ -8,7 +8,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
-from app.ai.tools.catalog import get_catalog_tools
+from app.ai.tools import get_customer_service_tools
 from app.core.config import Settings, settings
 
 
@@ -37,7 +37,7 @@ class ModelClient:
         tools: Sequence[BaseTool] | None = None,
     ) -> None:
         self._model = model
-        self._tools = tuple(get_catalog_tools() if tools is None else tools)
+        self._tools = tuple(get_customer_service_tools() if tools is None else tools)
         self._runnable: Runnable[Any, Any] = (
             model.bind_tools(list(self._tools)) if self._tools else model
         )

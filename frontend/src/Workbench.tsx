@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { buyers, findProduct, findOrder } from './data';
-import { reviewRequest, setServiceMode, staffReply, useDemo } from './store';
+import { refreshAfterSales, reviewRequest, setServiceMode, staffReply, useDemo } from './store';
 import { Badge, Modal, OrderCard, RequestCard, timeLabel } from './components';
 import { MessageFeed } from './Chat';
 import type { AfterSale } from './types';
@@ -251,6 +251,14 @@ function ApprovalList() {
   const [reviewing, setReviewing] = useState<{ id: string; decision: 'approved' | 'rejected' }>();
   const [reason, setReason] = useState(''),
     [notice, setNotice] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void refreshAfterSales().catch((refreshError: unknown) => {
+      const message = refreshError instanceof Error ? refreshError.message : '售后申请同步失败。';
+      setError(message);
+    });
+  }, []);
   const requests = s.requests.filter((r) => filter === 'all' || r.status === filter);
   const request = s.requests.find((r) => r.id === reviewing?.id);
   const open = (r: AfterSale, decision: 'approved' | 'rejected') => {
@@ -279,6 +287,11 @@ function ApprovalList() {
         <div className="notice" role="status">
           <Check size={16} />
           {notice}
+        </div>
+      )}
+      {error && (
+        <div className="notice" role="alert">
+          {error}
         </div>
       )}
       {requests.length ? (
@@ -325,7 +338,9 @@ function ApprovalList() {
       {reviewing && request && (
         <Modal
           title={reviewing.decision === 'approved' ? '审核通过此申请' : '拒绝此申请'}
-          onClose={() => setReviewing(undefined)}
+          onClose={() => {
+            if (!submitting) setReviewing(undefined);
+          }}
         >
           <p className="muted">
             {buyers[request.buyer]} · {request.id} · {request.kind}
@@ -352,19 +367,33 @@ function ApprovalList() {
             审核人：客服小周
           </p>
           <div className="modal-actions">
-            <button className="btn" onClick={() => setReviewing(undefined)}>
+            <button className="btn" disabled={submitting} onClick={() => setReviewing(undefined)}>
               取消
             </button>
             <button
               className={`btn ${reviewing.decision === 'approved' ? 'btn-primary' : 'btn-danger'}`}
-              disabled={!reason.trim() || request.status !== 'pending'}
-              onClick={() => {
-                reviewRequest(request.id, reviewing.decision, reason);
-                setReviewing(undefined);
-                setNotice('审核结果已记录，并发送到买家会话。');
+              disabled={!reason.trim() || request.status !== 'pending' || submitting}
+              onClick={async () => {
+                setSubmitting(true);
+                setError('');
+                try {
+                  await reviewRequest(request.id, reviewing.decision, reason);
+                  setReviewing(undefined);
+                  setNotice('审核结果已记录，并发送到买家会话。');
+                } catch (reviewError) {
+                  const message =
+                    reviewError instanceof Error ? reviewError.message : '审核提交失败。';
+                  setError(message);
+                } finally {
+                  setSubmitting(false);
+                }
               }}
             >
-              {reviewing.decision === 'approved' ? '确认批准' : '确认拒绝'}
+              {submitting
+                ? '正在提交…'
+                : reviewing.decision === 'approved'
+                  ? '确认批准'
+                  : '确认拒绝'}
             </button>
           </div>
         </Modal>
