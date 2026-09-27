@@ -393,7 +393,8 @@ $env:MODEL_TIMEOUT_SECONDS="120"
 .\.venv\Scripts\python.exe -m scripts.evaluate_rag --in-memory --retrieval-only
 ```
 
-当前JDDC阶段结果和限制见`docs/rag-evaluation-report.md`。
+当前JDDC阶段结果和限制见`docs/rag-evaluation-report.md`。报告已经使用恢复后的真实Milvus
+复跑，并确认100条测试集的TopK来源与内存余弦检索逐条一致。
 
 ## 数据库与迁移
 
