@@ -26,6 +26,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--allow-ai-verified",
+        action="store_true",
+        help="允许使用两遍模型核验的候选标注；报告中必须披露其并非人工金标准",
+    )
     return parser.parse_args()
 
 
@@ -67,9 +72,12 @@ def initialize_annotations(source_path: Path, output_path: Path) -> None:
     print(f"已生成 {len(annotations)} 条人工标注模板：{output_path}")
 
 
-def validate_annotation(record: dict[str, Any]) -> None:
+def validate_annotation(record: dict[str, Any], allow_ai_verified: bool = False) -> None:
     record_id = record.get("id", "unknown")
-    if record.get("review_status") != "reviewed":
+    allowed_statuses = {"reviewed"}
+    if allow_ai_verified:
+        allowed_statuses.add("ai_verified")
+    if record.get("review_status") not in allowed_statuses:
         raise ValueError(f"{record_id} 尚未人工复核")
     if not isinstance(record.get("should_answer"), bool):
         raise ValueError(f"{record_id} 缺少布尔类型 should_answer")
@@ -87,12 +95,16 @@ def stable_order(record: dict[str, Any]) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def build_splits(annotation_path: Path, output_directory: Path) -> None:
+def build_splits(
+    annotation_path: Path,
+    output_directory: Path,
+    allow_ai_verified: bool = False,
+) -> None:
     records = read_jsonl(annotation_path)
     if len(records) != 500:
         raise ValueError(f"正式划分要求500条标注，当前为 {len(records)} 条")
     for record in records:
-        validate_annotation(record)
+        validate_annotation(record, allow_ai_verified)
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records:
@@ -126,7 +138,11 @@ def main() -> None:
     if arguments.action == "initialize":
         initialize_annotations(arguments.source, arguments.annotations)
         return
-    build_splits(arguments.annotations, arguments.output)
+    build_splits(
+        arguments.annotations,
+        arguments.output,
+        arguments.allow_ai_verified,
+    )
 
 
 if __name__ == "__main__":

@@ -112,7 +112,11 @@ class AnswerQualityScores(BaseModel):
 
 class RagEvaluationReport(BaseModel):
     strategy: RetrievalStrategy = "hybrid"
+    retrieval_backend: str = "unknown"
     cases: int
+    answerable_cases: int = 0
+    unanswerable_cases: int = 0
+    annotation_status_counts: dict[str, int] = Field(default_factory=dict)
     answer_cases: int = 0
     recall_at_k: float
     recall_at_1: float = 0.0

@@ -121,11 +121,13 @@ class RagEvaluator:
         cases_path: Path,
         answer_engine: RagAnswerEngine | None = None,
         strategy: RetrievalStrategy = "hybrid",
+        use_category: bool = False,
     ) -> None:
         self.service = service
         self.cases_path = cases_path
         self.answer_engine = answer_engine
         self.strategy = strategy
+        self.use_category = use_category
 
     def run(self, limit: int = 5) -> RagEvaluationReport:
         cases = self._load_cases()
@@ -138,13 +140,19 @@ class RagEvaluator:
         answer_scores: list[AnswerQualityScores] = []
         citation_precisions: list[float] = []
         refusal_results: list[float] = []
+        annotation_status_counts: dict[str, int] = {}
 
         for case in cases:
             started = time.perf_counter()
             question = case.get("query", case.get("question", ""))
+            category = case.get("category") if self.use_category else None
+            annotation_status = case.get("review_status", "project_gold")
+            annotation_status_counts[annotation_status] = (
+                annotation_status_counts.get(annotation_status, 0) + 1
+            )
             response = self.service.search(
                 question,
-                case.get("category"),
+                category,
                 max(limit, 5),
                 strategy=self.strategy,
             )
@@ -173,6 +181,8 @@ class RagEvaluator:
             citation_precision: float | None = None
             answer_latency: float | None = None
             error_type: str | None = None
+            if not retrieval_passed:
+                error_type = "retrieval_error"
 
             if self.answer_engine is not None:
                 answer_started = time.perf_counter()
@@ -233,7 +243,11 @@ class RagEvaluator:
 
         return RagEvaluationReport(
             strategy=self.strategy,
+            retrieval_backend=type(self.service.vector_store).__name__,
             cases=len(results),
+            answerable_cases=sum(bool(case["should_answer"]) for case in cases),
+            unanswerable_cases=sum(not bool(case["should_answer"]) for case in cases),
+            annotation_status_counts=annotation_status_counts,
             answer_cases=len(answer_scores),
             recall_at_k=self._average(recall_values.get(limit, recall_values[5])),
             recall_at_1=self._average(recall_values[1]),
@@ -271,7 +285,15 @@ class RagEvaluator:
         return detail_path, report_path
 
     def _load_cases(self) -> list[dict[str, Any]]:
-        cases = json.loads(self.cases_path.read_text(encoding="utf-8"))
+        raw_text = self.cases_path.read_text(encoding="utf-8")
+        if self.cases_path.suffix == ".jsonl":
+            cases = [
+                json.loads(line)
+                for line in raw_text.splitlines()
+                if line.strip()
+            ]
+        else:
+            cases = json.loads(raw_text)
         if not isinstance(cases, list):
             raise ValueError("RAG 评测数据必须是 JSON 数组")
         for case in cases:
@@ -372,7 +394,10 @@ class RagEvaluator:
             "# RAG 检索与回答评测报告",
             "",
             f"- 案例数：{report.cases}",
+            f"- 可回答 / 不可回答：{report.answerable_cases} / {report.unanswerable_cases}",
+            f"- 标注来源：{report.annotation_status_counts}",
             f"- 检索方案：{report.strategy}",
+            f"- 向量存储后端：{report.retrieval_backend}",
             f"- 回答评测案例数：{report.answer_cases}",
             f"- Recall@1 / @3 / @5：{report.recall_at_1:.4f} / {report.recall_at_3:.4f} / {report.recall_at_5:.4f}",
             f"- MRR：{report.mrr:.4f}",
@@ -392,7 +417,9 @@ class RagEvaluator:
         failures = [result for result in report.results if result.error_type]
         if not failures:
             lines.append("没有检测到失败案例。")
-        for result in failures:
+        if failures:
+            lines.append(f"共检测到 {len(failures)} 条失败，下面最多展示20条。")
+        for result in failures[:20]:
             lines.append(f"- `{result.id}` {result.error_type}：{result.question}")
         lines.append("")
         return "\n".join(lines)
@@ -406,15 +433,23 @@ class RagComparisonEvaluator:
         services: dict[RetrievalStrategy, KnowledgeService],
         cases_path: Path,
         answer_engine: RagAnswerEngine | None = None,
+        use_category: bool = False,
     ) -> None:
         self.services = services
         self.cases_path = cases_path
         self.answer_engine = answer_engine
+        self.use_category = use_category
 
     def run(self) -> RagComparisonReport:
         reports: list[RagEvaluationReport] = []
         for strategy, service in self.services.items():
-            evaluator = RagEvaluator(service, self.cases_path, self.answer_engine, strategy)
+            evaluator = RagEvaluator(
+                service=service,
+                cases_path=self.cases_path,
+                answer_engine=self.answer_engine,
+                strategy=strategy,
+                use_category=self.use_category,
+            )
             reports.append(evaluator.run(limit=5))
         return RagComparisonReport(cases_path=str(self.cases_path), reports=reports)
 

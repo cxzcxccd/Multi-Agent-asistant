@@ -18,5 +18,6 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/infrastructure/milvus/volumes/
 backend/data/evaluation/results/
+backend/data/evaluation/rag_annotations_shard_*.jsonl
 .workbuddy/
 backend/data/evaluation/external/Chinese-EcomQA/

@@ -11,9 +11,13 @@ from app.modules.knowledge.evaluation import (
     RagComparisonEvaluator,
     RagEvaluator,
 )
+from app.modules.knowledge.embeddings import create_embedding_provider
+from app.modules.knowledge.indexer import KnowledgeIndexer
+from app.modules.knowledge.loader import load_knowledge_directory
 from app.modules.knowledge.reranker import FastEmbedReranker
 from app.modules.knowledge.repository import KnowledgeRepository
 from app.modules.knowledge.service import KnowledgeService
+from app.modules.knowledge.vector_store import InMemoryKnowledgeVectorStore
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +34,16 @@ def parse_arguments() -> argparse.Namespace:
         "--compare",
         action="store_true",
         help="比较关键词、向量、混合和混合重排四种检索方案",
+    )
+    parser.add_argument(
+        "--use-category",
+        action="store_true",
+        help="使用数据中的分类过滤检索；默认关闭，避免向检索器泄露答案类别",
+    )
+    parser.add_argument(
+        "--in-memory",
+        action="store_true",
+        help="使用真实BGE和内存余弦检索运行离线评测，不连接Milvus",
     )
     parser.add_argument(
         "--cases",
@@ -50,17 +64,39 @@ def main() -> None:
     arguments = parse_arguments()
     initialize_database()
     repository = KnowledgeRepository(get_session_factory())
-    service = KnowledgeService(repository)
+    if arguments.in_memory:
+        embedding_provider = create_embedding_provider()
+        vector_store = InMemoryKnowledgeVectorStore("rag_evaluation_in_memory")
+        chunks = load_knowledge_directory(BACKEND_ROOT / "data" / "knowledge")
+        indexer = KnowledgeIndexer(repository, embedding_provider, vector_store)
+        indexer.rebuild(chunks)
+        service = KnowledgeService(
+            repository=repository,
+            embedding_provider=embedding_provider,
+            vector_store=vector_store,
+        )
+        print("评测向量存储：in-memory（真实BGE，未连接Milvus）")
+    else:
+        service = KnowledgeService(repository)
 
     answer_engine = None
     if not arguments.retrieval_only:
         model_client = create_model_client(tools=[])
         answer_engine = ModelRagAnswerEngine(model_client)
 
-    evaluator = RagEvaluator(service, arguments.cases, answer_engine)
+    evaluator = RagEvaluator(
+        service,
+        arguments.cases,
+        answer_engine,
+        use_category=arguments.use_category,
+    )
     if arguments.compare:
         rerank_service = KnowledgeService(
-            repository,
+            repository=repository,
+            embedding_provider=service.embedding_provider,
+            vector_store=service.vector_store,
+            vector_weight=service.vector_weight,
+            minimum_score=service.minimum_score,
             reranker=FastEmbedReranker(),
         )
         services = {
@@ -73,6 +109,7 @@ def main() -> None:
             services,
             arguments.cases,
             answer_engine,
+            arguments.use_category,
         )
         comparison = comparison_evaluator.run()
         comparison_path = comparison_evaluator.save(comparison, arguments.output)

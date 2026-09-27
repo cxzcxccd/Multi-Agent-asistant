@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.prepare_rag_evaluation import build_splits, initialize_annotations
+from scripts.label_rag_evaluation import parse_json_array, validate_batch
 
 
 def write_jsonl(path: Path, records: list[dict]) -> None:
@@ -66,3 +67,46 @@ def test_build_splits_creates_300_100_100_stratified_files(tmp_path: Path) -> No
     assert len(development) == 300
     assert len(validation) == 100
     assert len(test) == 100
+
+
+def test_ai_verified_annotations_require_explicit_opt_in(tmp_path: Path) -> None:
+    categories = [
+        "return_policy",
+        "warranty_policy",
+        "shipping_policy",
+        "payment_policy",
+        "product_guide",
+    ]
+    records: list[dict] = []
+    for category in categories:
+        for index in range(100):
+            records.append(
+                {
+                    "id": f"{category}-{index}",
+                    "query": "测试问题",
+                    "category": category,
+                    "should_answer": False,
+                    "expected_sources": [],
+                    "reference_answer": "根据现有知识库无法确定。",
+                    "review_status": "ai_verified",
+                }
+            )
+    annotations = tmp_path / "ai.jsonl"
+    write_jsonl(annotations, records)
+
+    with pytest.raises(ValueError, match="尚未人工复核"):
+        build_splits(annotations, tmp_path / "rejected")
+
+    build_splits(annotations, tmp_path / "accepted", allow_ai_verified=True)
+    assert (tmp_path / "accepted" / "test.json").exists()
+
+
+def test_label_validation_rejects_invented_source_ids() -> None:
+    original = [{"id": "case-1", "query": "问题", "category": "return_policy"}]
+    labeled = parse_json_array(
+        '[{"id":"case-1","should_answer":true,'
+        '"expected_sources":["missing.md#section"],"reference_answer":"答案"}]'
+    )
+
+    with pytest.raises(ValueError, match="不存在的知识来源"):
+        validate_batch(original, labeled, {"return_policy.md#七天无理由退货"})

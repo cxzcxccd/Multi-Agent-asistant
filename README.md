@@ -111,6 +111,7 @@ npm run format:check
 - RAG 默认使用本地 BGE 中文语义向量，同时保留离线特征哈希测试实现和 OpenAI Embedding Provider；评测覆盖 Recall@K、MRR、拒答率、检索延迟、回答正确性、忠实度、完整性和引用准确率。
 - 客服可在“开发者与评测”页面运行真实检索评测并查看每条案例的召回来源与通过状态。
 - RAG评测支持同集比较关键词、BGE+Milvus向量、加权混合和BGE重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。
+- JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
 - 165 项后端测试。
 

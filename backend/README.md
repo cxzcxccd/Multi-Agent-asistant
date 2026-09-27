@@ -382,6 +382,19 @@ JDDC 500条数据必须人工对应当前知识库后才能用于项目RAG指标
 标注模板位于 `data/evaluation/rag_annotations_500.jsonl`。构建脚本会拒绝未复核、可回答但
 缺少来源、不可回答却填写来源或缺少参考答案的数据，避免自动主题映射污染最终指标。
 
+两遍模型辅助标注和无Milvus时的离线诊断命令：
+
+```powershell
+# 输出ai_verified候选标注，仍需人工复核
+$env:MODEL_TIMEOUT_SECONDS="120"
+.\.venv\Scripts\python.exe -m scripts.label_rag_evaluation
+
+# 使用真实BGE与内存余弦检索；结果不得表述为Milvus性能
+.\.venv\Scripts\python.exe -m scripts.evaluate_rag --in-memory --retrieval-only
+```
+
+当前JDDC阶段结果和限制见`docs/rag-evaluation-report.md`。
+
 ## 数据库与迁移
 
 本地默认使用 `backend/data/app.db`。首次启动后端时会自动执行全部 Alembic 迁移；
