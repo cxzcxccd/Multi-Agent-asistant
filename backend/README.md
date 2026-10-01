@@ -23,6 +23,7 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 - LangGraph `preprocess → supervisor → execute_tasks → synthesis` 任务级多 Agent 客服图；Supervisor 根据主次意图拆分商品、订单、售后、知识库或通用任务。
 - 无依赖任务通过 `asyncio.gather` 并行执行；订单到售后等带依赖任务按照 DAG 顺序执行，每个领域 Agent 使用独立消息上下文和最小工具集。
 - 汇总 Agent 不绑定任何业务工具，只读取结构化 `AgentTaskResult`；调度计划、任务结果、耗时和错误保存到 `agent_runs` 与 `agent_run_tasks`。
+- 独立 SQLite Checkpointer 保存顶层工作流和每个领域任务子图的状态；任务命名空间绑定当前用户消息 ID，恢复同一轮执行时直接复用已经完成的任务结果。
 - 面向数码商品售前咨询的中文系统提示词。
 - 会话、消息、聊天请求、聊天响应和运行统计的数据格式。
 - 数据库会话仓库和会话服务，可在服务重启后恢复会话并继续调用 LangGraph 客服运行时。
@@ -33,7 +34,7 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 
 当前边界：LangGraph 运行时已经可以完成真实模型与商品、订单、售后及知识检索工具的调用闭环，
 业务数据和知识正文由 SQLite 持久保存，知识向量由 Milvus 持久保存；前端可以实时显示模型文本、检索来源和工具进度。
-尚未实现 MCP；人工接管、回复与状态切换已持久化。
+LangGraph 状态保存在独立的 `data/checkpoints.db`，不会与业务表混用。尚未实现需要用户确认的 `interrupt/resume` HTTP 协议和 MCP；人工接管、回复与状态切换已持久化。
 
 ## 当前调用链
 
@@ -81,7 +82,8 @@ LangGraph 当前结构：
 START → preprocess → supervisor → execute_tasks → synthesis → END
                                   │
                                   ├─无依赖任务并行
-                                  └─有依赖任务按 DAG 顺序执行
+                                  ├─有依赖任务按 DAG 顺序执行
+                                  └─每个任务由独立可恢复子图执行
 ```
 
 订单查询调用链：
@@ -148,6 +150,8 @@ backend/
 │  │  │  使用 LangGraph 构建 preprocess、supervisor、model 与 tools 节点；保存调度计划、消息和调用统计，根据 tool_calls
 │  │  │  决定继续查询或结束；异步流式运行时转发模型片段与工具进度，并限制连续
 │  │  │  工具轮数、隔离工具错误和校验对话输入。
+│  │  ├─ checkpoints.py
+│  │  │  打开异步 SQLite Checkpointer，配置项目状态类型的序列化白名单并初始化检查点表。
 │  │  ├─ multi_agent/
 │  │  │  ├─ schemas.py
 │  │  │  │  定义 AgentPlan、AgentTask、AgentTaskResult 和持久化运行快照。
@@ -478,7 +482,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 178 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 179 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -489,4 +493,4 @@ uv run --no-cache pytest -q
 2. 为 SSE 增加刷新后的自动重连、断线恢复游标和生产环境代理配置。
 3. 增加登录限流、认证审计和签名密钥轮换机制。
 
-任务级 Supervisor、依赖图、并行执行、汇总 Agent 和运行记录持久化已经完成。下一步可增加跨进程任务队列、运行中断恢复和需要用户确认的 LangGraph interrupt；MCP 尚未接入。
+任务级 Supervisor、依赖图、并行执行、汇总 Agent、运行记录与 LangGraph Checkpoint 持久化已经完成。下一步可为售后确认增加 `interrupt/resume` 接口，并补充进程异常后的待恢复运行扫描；MCP 尚未接入。

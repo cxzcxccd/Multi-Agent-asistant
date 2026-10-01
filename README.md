@@ -100,6 +100,7 @@ npm run format:check
 - 支持 OpenAI 和 OpenAI 兼容服务的模型客户端。
 - 使用 LangGraph 编排任务级 Supervisor 多 Agent 工作流；Supervisor 将复合 Query 拆成带依赖的任务 DAG，无依赖领域 Agent 并行执行、有依赖任务顺序执行，最后由无工具权限的汇总 Agent 统一回答。
 - 商品、订单、售后、知识库和通用 Agent 使用独立上下文及最小工具集；调度计划、任务结果、耗时、调用次数和错误持久化到 Agent 运行记录表。
+- 使用独立 SQLite `checkpoints.db` 保存 LangGraph 顶层状态和领域任务子图结果；同一轮执行恢复时复用已完成任务，避免重复调用模型或业务工具。
 - 使用本地 `BAAI/bge-small-zh-v1.5` ONNX Embedding 完成语义意图路由，并为 RAG 文档和 Query 生成 512 维真实语义向量。
 - 会话、消息、聊天请求与响应的数据格式。
 - SQLAlchemy 会话仓库和服务，支持重启恢复、买家隔离、历史消息转换、失败回滚和同会话串行处理。
@@ -114,7 +115,7 @@ npm run format:check
 - RAG评测支持同集比较关键词、BGE+Milvus向量、加权混合和BGE重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。
 - JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
-- 178 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、运行记录持久化和跨领域工具越权拦截。
+- 179 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、Checkpoint 恢复、运行记录持久化和跨领域工具越权拦截。
 
 ## 代码导览
 
@@ -146,6 +147,7 @@ backend/
   app/ai/model_client.py  模型连接、工具绑定和调用边界
   app/ai/query_preprocessor.py Query 清洗、语义意图路由、上下文补全和实体提取
   app/ai/runtime.py       LangGraph 客服运行图
+  app/ai/checkpoints.py   SQLite Checkpointer 生命周期与安全序列化配置
   app/ai/multi_agent/    Supervisor、领域 Agent 定义、调度计划和工具权限
   app/modules/agent_runs/ Agent 运行与领域任务结果的数据库模型和仓库
   app/ai/tools/catalog.py AI 商品搜索与详情工具
@@ -166,6 +168,7 @@ backend/
   scripts/evaluate_rag.py 运行真实 BGE、Milvus 与聊天模型的 RAG 评测
   data/intents/routes.json 商品、订单、售后、知识与人工服务的语义路由样本
   data/app.db             本地 SQLite 数据库，不提交到 Git
+  data/checkpoints.db     LangGraph 运行状态数据库，不提交到 Git
   tests/                  后端自动化测试
 ```
 

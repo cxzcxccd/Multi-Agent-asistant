@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
+from app.ai.checkpoints import open_sqlite_checkpointer
 from app.ai.multi_agent.runtime import MultiAgentRuntime
 from app.ai.multi_agent.schemas import AgentName
 from app.ai.query_preprocessor import IntentName
@@ -146,3 +147,43 @@ def test_after_sales_task_waits_for_order_task() -> None:
     assert result.agent_plan is not None
     assert result.agent_plan.execution_mode == "sequential"
     assert result.agent_plan.tasks[1].depends_on == [result.agent_plan.tasks[0].id]
+
+
+def test_completed_agent_task_is_reused_from_sqlite_checkpoint(tmp_path: Any) -> None:
+    """同一轮任务重试时，不应再次调用已经成功的领域Agent。"""
+
+    checkpoint_path = tmp_path / "checkpoints.db"
+    calls: list[str] = []
+
+    async def run_twice() -> None:
+        async with open_sqlite_checkpointer(
+            checkpoint_path.as_posix()
+        ) as checkpointer:
+            product_client = DirectClient("找到耳机", calls, "product")
+            runtime = MultiAgentRuntime(
+                model_client=product_client,
+                query_preprocessor=FixedPreprocessor(IntentName.PRODUCT_INQUIRY),
+                agent_clients={AgentName.PRODUCT: product_client},
+                synthesis_client=SynthesisClient("已经找到耳机。"),
+                checkpointer=checkpointer,
+            )
+            message = HumanMessage(id="message-checkpoint-1", content="推荐耳机")
+            config: RunnableConfig = {
+                "configurable": {"thread_id": "conversation-checkpoint-1"}
+            }
+
+            stream_events = []
+            async for event in runtime.astream([message], config=config):
+                stream_events.append(event)
+
+            first_result = stream_events[-1].result
+            second_result = await runtime.ainvoke([message], config=config)
+
+            assert first_result is not None
+            assert first_result.reply.text == "已经找到耳机。"
+            assert second_result.reply.text == "已经找到耳机。"
+
+    asyncio.run(run_twice())
+
+    assert calls == ["product"]
+    assert checkpoint_path.exists()

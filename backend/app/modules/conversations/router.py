@@ -2,7 +2,6 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from functools import lru_cache
 from typing import Annotated, NoReturn
 from uuid import UUID
 
@@ -16,6 +15,7 @@ from app.db.session import get_session_factory
 from app.modules.conversations.repository import SqlConversationRepository
 from app.modules.agent_runs.repository import SqlAgentRunRepository
 from app.ai.multi_agent.schemas import AgentRunRecord
+from app.ai.runtime import create_customer_service_runtime
 from app.modules.conversations.schemas import (
     BuyerId,
     ChatRequest,
@@ -38,17 +38,32 @@ from app.modules.conversations.service import (
 router = APIRouter(tags=["conversations"])
 
 
-@lru_cache(maxsize=1)
-def get_conversation_service() -> ConversationService:
-    """复用数据库会话仓库，确保重启后仍能恢复会话。"""
+async def get_conversation_service(request: Request) -> ConversationService:
+    """复用注入SQLite Checkpointer的会话服务。"""
 
-    initialize_database()
-    repository = SqlConversationRepository(get_session_factory())
-    agent_run_repository = SqlAgentRunRepository(get_session_factory())
-    return ConversationService(
-        repository=repository,
-        agent_run_repository=agent_run_repository,
-    )
+    existing = getattr(request.app.state, "conversation_service", None)
+    if existing is not None:
+        return existing
+
+    lock = request.app.state.conversation_service_lock
+    async with lock:
+        existing = getattr(request.app.state, "conversation_service", None)
+        if existing is not None:
+            return existing
+
+        initialize_database()
+        repository = SqlConversationRepository(get_session_factory())
+        agent_run_repository = SqlAgentRunRepository(get_session_factory())
+        checkpointer = request.app.state.checkpointer
+        service = ConversationService(
+            repository=repository,
+            agent_run_repository=agent_run_repository,
+            runtime_factory=lambda: create_customer_service_runtime(
+                checkpointer=checkpointer
+            ),
+        )
+        request.app.state.conversation_service = service
+        return service
 
 
 ConversationServiceDependency = Annotated[

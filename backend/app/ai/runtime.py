@@ -775,9 +775,9 @@ class CustomerServiceRuntime:
         )
 
 
-def create_customer_service_runtime() -> Any:
+def create_customer_service_runtime(checkpointer: Any | None = None) -> Any:
     """创建生产任务级多 Agent 运行时。"""
 
     from app.ai.multi_agent.runtime import create_multi_agent_runtime
 
-    return create_multi_agent_runtime()
+    return create_multi_agent_runtime(checkpointer=checkpointer)

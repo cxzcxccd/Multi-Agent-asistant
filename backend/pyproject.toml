@@ -5,6 +5,7 @@ description = "FastAPI backend for the Geek Select AI commerce assistant"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "aiosqlite>=0.22.1",
   "alembic>=1.13,<2",
   "argon2-cffi>=23,<26",
   "fastapi",
@@ -12,6 +13,7 @@ dependencies = [
   "langchain",
   "langchain-openai",
   "langgraph",
+  "langgraph-checkpoint-sqlite>=3.1.1",
   "pydantic-settings",
   "pymilvus>=2.6,<3",
   "sqlalchemy>=2.0,<3",

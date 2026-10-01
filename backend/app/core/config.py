@@ -7,6 +7,9 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[2] / "data" / "app.db"
+DEFAULT_CHECKPOINT_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "checkpoints.db"
+)
 DEFAULT_INTENT_CACHE_PATH = (
     Path(__file__).resolve().parents[3] / ".local" / "fastembed"
 )
@@ -24,6 +27,7 @@ class Settings(BaseSettings):
     app_debug: bool = False
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    checkpoint_database_path: str = str(DEFAULT_CHECKPOINT_PATH)
     auth_secret: SecretStr = SecretStr("local-demo-secret-change-before-deploy")
     auth_token_minutes: int = Field(default=30, ge=5, le=1440)
     refresh_token_days: int = Field(default=7, ge=1, le=90)

@@ -19,6 +19,7 @@ from langchain_core.messages import (
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
@@ -55,6 +56,12 @@ class MultiAgentState(TypedDict):
     tool_calls: int
 
 
+class AgentTaskCheckpointState(TypedDict):
+    """单个领域任务子图保存的最小可恢复状态。"""
+
+    result: AgentTaskResult | None
+
+
 StreamCallback = Callable[[RuntimeStreamEvent], Awaitable[None]]
 STREAM_CALLBACK_KEY = "multi_agent_stream_callback"
 
@@ -71,6 +78,7 @@ class MultiAgentRuntime:
         synthesis_client: Any | None = None,
         system_prompt: str | None = None,
         max_tool_rounds: int = 4,
+        checkpointer: BaseCheckpointSaver[Any] | None = None,
     ) -> None:
         self._model_client = model_client
         self._query_preprocessor = query_preprocessor or create_query_preprocessor()
@@ -79,6 +87,7 @@ class MultiAgentRuntime:
         self._provided_synthesis_client = synthesis_client
         self._system_prompt = system_prompt or load_customer_service_prompt()
         self._max_tool_rounds = max_tool_rounds
+        self._checkpointer = checkpointer
         self._client_cache: dict[AgentName, Any] = {}
         self._graph = self._build_graph()
 
@@ -157,7 +166,7 @@ class MultiAgentRuntime:
         builder.add_edge("supervisor", "execute_tasks")
         builder.add_edge("execute_tasks", "synthesis")
         builder.add_edge("synthesis", END)
-        return builder.compile()
+        return builder.compile(checkpointer=self._checkpointer)
 
     async def _preprocess(
         self,
@@ -260,6 +269,62 @@ class MultiAgentRuntime:
         previous_results: list[AgentTaskResult],
         config: RunnableConfig,
     ) -> AgentTaskResult:
+        """执行任务子图；恢复时直接复用已经完成的任务结果。"""
+
+        if self._checkpointer is None:
+            return await self._execute_task_body(
+                task,
+                state,
+                previous_results,
+                config,
+            )
+
+        async def execute_agent(
+            _task_state: AgentTaskCheckpointState,
+            config: RunnableConfig,
+        ) -> dict[str, AgentTaskResult]:
+            result = await self._execute_task_body(
+                task,
+                state,
+                previous_results,
+                config,
+            )
+            return {"result": result}
+
+        builder = StateGraph(AgentTaskCheckpointState)
+        builder.add_node("execute_agent", execute_agent)
+        builder.add_edge(START, "execute_agent")
+        builder.add_edge("execute_agent", END)
+        task_graph = builder.compile(checkpointer=self._checkpointer)
+        task_config = self._task_checkpoint_config(config, state, task)
+
+        snapshot = await task_graph.aget_state(task_config)
+        saved_result = snapshot.values.get("result") if snapshot.values else None
+        if isinstance(saved_result, AgentTaskResult):
+            return saved_result
+        if isinstance(saved_result, dict):
+            return AgentTaskResult.model_validate(saved_result)
+
+        output = await task_graph.ainvoke(
+            {"result": None},
+            config=task_config,
+        )
+        result = output.get("result")
+        if result is None:
+            raise RuntimeErrorBase(f"任务子图没有返回结果：{task.id}")
+        if isinstance(result, AgentTaskResult):
+            return result
+        return AgentTaskResult.model_validate(result)
+
+    async def _execute_task_body(
+        self,
+        task: AgentTask,
+        state: MultiAgentState,
+        previous_results: list[AgentTaskResult],
+        config: RunnableConfig,
+    ) -> AgentTaskResult:
+        """执行一个领域Agent的模型和工具循环。"""
+
         callback = self._callback(config)
         started = perf_counter()
         if callback is not None:
@@ -364,6 +429,29 @@ class MultiAgentRuntime:
                     task_result=result,
                 )
             )
+        return result
+
+    @staticmethod
+    def _task_checkpoint_config(
+        config: RunnableConfig,
+        state: MultiAgentState,
+        task: AgentTask,
+    ) -> RunnableConfig:
+        """为每轮对话的每个Agent任务创建独立Checkpoint命名空间。"""
+
+        result: RunnableConfig = dict(config)
+        configurable = dict(result.get("configurable") or {})
+        current_human_message: HumanMessage | None = None
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage):
+                current_human_message = message
+                break
+
+        message_id = "current-turn"
+        if current_human_message is not None and current_human_message.id:
+            message_id = str(current_human_message.id)
+        configurable["checkpoint_ns"] = f"agent-task:{message_id}:{task.id}"
+        result["configurable"] = configurable
         return result
 
     async def _synthesize(
@@ -624,10 +712,13 @@ class MultiAgentRuntime:
         return callback if callable(callback) else None
 
 
-def create_multi_agent_runtime() -> MultiAgentRuntime:
+def create_multi_agent_runtime(
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> MultiAgentRuntime:
     """使用当前模型和语义路由配置创建生产多 Agent 运行时。"""
 
     return MultiAgentRuntime(
         model_client=create_model_client(),
         query_preprocessor=create_query_preprocessor(),
+        checkpointer=checkpointer,
     )
