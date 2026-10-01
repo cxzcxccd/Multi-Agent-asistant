@@ -306,6 +306,7 @@ export interface ChatResponse {
     tool_calls: number;
     query_analysis: QueryAnalysis | null;
     agent_plan: AgentPlan | null;
+    task_results: AgentTaskResult[];
   };
 }
 
@@ -317,6 +318,29 @@ export interface AgentPlan {
   primary_agent: AgentName;
   reason: string;
   allowed_tools: string[];
+  tasks: AgentTask[];
+  execution_mode: 'sequential' | 'parallel';
+}
+
+export interface AgentTask {
+  id: string;
+  agent_name: AgentName;
+  description: string;
+  depends_on: string[];
+  allowed_tools: string[];
+}
+
+export interface AgentTaskResult {
+  task_id: string;
+  agent_name: AgentName;
+  status: 'completed' | 'failed' | 'skipped';
+  summary: string;
+  tool_results: Array<{ name: string; output: unknown }>;
+  model_calls: number;
+  tool_calls: number;
+  tool_rounds: number;
+  duration_ms: number;
+  error?: string | null;
 }
 
 export type IntentName =
@@ -359,7 +383,7 @@ export interface ChatStreamStart {
 }
 
 export interface ChatStreamStatus {
-  phase: 'router' | 'supervisor' | 'agent' | 'model' | 'tool';
+  phase: 'router' | 'supervisor' | 'agent' | 'synthesis' | 'model' | 'tool';
   state: 'started' | 'completed';
   query_analysis?: QueryAnalysis | null;
   tool_calls: number;
@@ -367,6 +391,8 @@ export interface ChatStreamStatus {
   tool_results?: Array<{ name: string; output: unknown }>;
   agent_name?: AgentName | null;
   agent_plan?: AgentPlan | null;
+  task_id?: string | null;
+  task_result?: AgentTaskResult | null;
 }
 
 export interface ChatStreamCallbacks {

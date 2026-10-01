@@ -14,6 +14,8 @@ from app.modules.auth.dependencies import BuyerPrincipal, SsePrincipal, StaffPri
 from app.db.initialize import initialize_database
 from app.db.session import get_session_factory
 from app.modules.conversations.repository import SqlConversationRepository
+from app.modules.agent_runs.repository import SqlAgentRunRepository
+from app.ai.multi_agent.schemas import AgentRunRecord
 from app.modules.conversations.schemas import (
     BuyerId,
     ChatRequest,
@@ -42,7 +44,11 @@ def get_conversation_service() -> ConversationService:
 
     initialize_database()
     repository = SqlConversationRepository(get_session_factory())
-    return ConversationService(repository=repository)
+    agent_run_repository = SqlAgentRunRepository(get_session_factory())
+    return ConversationService(
+        repository=repository,
+        agent_run_repository=agent_run_repository,
+    )
 
 
 ConversationServiceDependency = Annotated[
@@ -260,6 +266,24 @@ async def get_conversation(
 
     try:
         return service.get_conversation(conversation_id, user.buyer_id)
+    except ConversationServiceError as error:
+        raise_http_error(error)
+
+
+@router.get(
+    "/conversations/{conversation_id}/agent-runs",
+    response_model=list[AgentRunRecord],
+    summary="查询会话的多 Agent 运行记录",
+)
+async def list_agent_runs(
+    conversation_id: Annotated[UUID, Path(description="会话编号")],
+    service: ConversationServiceDependency,
+    user: BuyerPrincipal,
+) -> list[AgentRunRecord]:
+    """返回当前买家有权访问的任务计划和领域 Agent 结果。"""
+
+    try:
+        return service.list_agent_runs(conversation_id, user.buyer_id)
     except ConversationServiceError as error:
         raise_http_error(error)
 

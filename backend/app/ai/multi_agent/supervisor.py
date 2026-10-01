@@ -1,8 +1,10 @@
 """根据 Query 分析结果为客服请求选择最小领域 Agent 集合。"""
 
+from typing import Literal
+
 from langchain_core.tools import BaseTool
 
-from app.ai.multi_agent.schemas import AgentName, AgentPlan
+from app.ai.multi_agent.schemas import AgentName, AgentPlan, AgentTask
 from app.ai.query_preprocessor import IntentName, QueryAnalysis
 from app.ai.tools.after_sales import get_after_sale_tools
 from app.ai.tools.catalog import get_catalog_tools
@@ -26,6 +28,7 @@ AGENT_DESCRIPTIONS: dict[AgentName, str] = {
     AgentName.AFTER_SALES: "售后 Agent 负责售后记录查询和待确认申请草稿。",
     AgentName.KNOWLEDGE: "知识库 Agent 负责政策、保修和使用说明检索。",
     AgentName.GENERAL: "通用 Agent 负责无需业务工具的普通对话和人工服务引导。",
+    AgentName.SYNTHESIS: "汇总 Agent 负责合并领域结果，不调用业务工具。",
 }
 
 
@@ -38,6 +41,7 @@ def _agent_tools() -> dict[AgentName, list[BaseTool]]:
         AgentName.AFTER_SALES: get_after_sale_tools(),
         AgentName.KNOWLEDGE: get_knowledge_tools(),
         AgentName.GENERAL: [],
+        AgentName.SYNTHESIS: [],
     }
 
 
@@ -83,7 +87,47 @@ class Supervisor:
             reason=self._build_reason(agents),
         )
         allowed_tools = [tool.name for tool in tools_for_plan(preliminary_plan)]
-        return preliminary_plan.model_copy(update={"allowed_tools": allowed_tools})
+        tasks = self._build_tasks(agents)
+        execution_mode = self._execution_mode(tasks)
+        return preliminary_plan.model_copy(
+            update={
+                "allowed_tools": allowed_tools,
+                "tasks": tasks,
+                "execution_mode": execution_mode,
+            }
+        )
+
+    @staticmethod
+    def _build_tasks(agents: list[AgentName]) -> list[AgentTask]:
+        """为每个领域生成独立任务，并表达必要的先后依赖。"""
+
+        tools_by_agent = _agent_tools()
+        tasks: list[AgentTask] = []
+        order_task_id: str | None = None
+
+        for position, agent_name in enumerate(agents, start=1):
+            task_id = f"task-{position}-{agent_name.value}"
+            dependencies: list[str] = []
+            if agent_name is AgentName.AFTER_SALES and order_task_id is not None:
+                dependencies.append(order_task_id)
+
+            task = AgentTask(
+                id=task_id,
+                agent_name=agent_name,
+                description=AGENT_DESCRIPTIONS[agent_name],
+                depends_on=dependencies,
+                allowed_tools=[tool.name for tool in tools_by_agent[agent_name]],
+            )
+            tasks.append(task)
+            if agent_name is AgentName.ORDER:
+                order_task_id = task_id
+        return tasks
+
+    @staticmethod
+    def _execution_mode(tasks: list[AgentTask]) -> Literal["sequential", "parallel"]:
+        if len(tasks) > 1 and all(not task.depends_on for task in tasks):
+            return "parallel"
+        return "sequential"
 
     @staticmethod
     def _build_reason(agents: list[AgentName]) -> str:

@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.ai.model_client import ModelClientError
+from app.ai.multi_agent.schemas import AgentRunRecord
 from app.ai.runtime import (
     RuntimeErrorBase,
     RuntimeResult,
@@ -63,6 +64,14 @@ class ConversationStore(Protocol):
     def list_by_buyer(self, buyer_id: BuyerId) -> list[Conversation]: ...
 
     def list_all(self) -> list[Conversation]: ...
+
+
+class AgentRunStore(Protocol):
+    """会话服务保存和读取 Agent 运行记录所需的最小接口。"""
+
+    def add(self, run: AgentRunRecord) -> AgentRunRecord: ...
+
+    def list_by_conversation(self, conversation_id: UUID) -> list[AgentRunRecord]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,12 +130,14 @@ class ConversationService:
         ] = create_customer_service_runtime,
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] = utc_now,
+        agent_run_repository: AgentRunStore | None = None,
     ) -> None:
         self.repository = repository or ConversationRepository()
         self._runtime = runtime
         self._runtime_factory = runtime_factory
         self._id_factory = id_factory
         self._clock = clock
+        self._agent_run_repository = agent_run_repository
         self._conversation_locks: dict[UUID, asyncio.Lock] = {}
 
     async def send_message(self, request: ChatRequest) -> ChatResponse:
@@ -272,6 +283,8 @@ class ConversationService:
         else:
             self.repository.update(updated)
 
+        self._save_agent_run(updated, turn, result, reply_text)
+
         return ChatResponse(
             conversation_id=updated.id,
             mode=updated.mode,
@@ -283,8 +296,57 @@ class ConversationService:
                 tool_calls=result.tool_calls,
                 query_analysis=result.query_analysis,
                 agent_plan=result.agent_plan,
+                task_results=list(result.task_results),
             ),
         )
+
+    def _save_agent_run(
+        self,
+        conversation: Conversation,
+        turn: PreparedTurn,
+        result: RuntimeResult,
+        reply_text: str,
+    ) -> None:
+        """在启用运行仓库时保存调度计划和全部领域任务结果。"""
+
+        if self._agent_run_repository is None or result.agent_plan is None:
+            return
+
+        failed_tasks = [
+            task for task in result.task_results if task.status != "completed"
+        ]
+        status: Literal["completed", "partial", "failed"] = "completed"
+        if failed_tasks and len(failed_tasks) == len(result.task_results):
+            status = "failed"
+        elif failed_tasks:
+            status = "partial"
+
+        run = AgentRunRecord(
+            id=self._id_factory(),
+            conversation_id=conversation.id,
+            buyer_id=conversation.buyer_id,
+            status=status,
+            plan=result.agent_plan,
+            results=list(result.task_results),
+            final_answer=reply_text,
+            model_calls=result.model_calls,
+            tool_calls=result.tool_calls,
+            started_at=turn.user_message.created_at,
+            completed_at=conversation.updated_at,
+        )
+        self._agent_run_repository.add(run)
+
+    def list_agent_runs(
+        self,
+        conversation_id: UUID,
+        buyer_id: BuyerId,
+    ) -> list[AgentRunRecord]:
+        """读取当前买家指定会话的多 Agent 执行记录。"""
+
+        self.get_conversation(conversation_id, buyer_id)
+        if self._agent_run_repository is None:
+            return []
+        return self._agent_run_repository.list_by_conversation(conversation_id)
 
     def get_conversation(
         self,
@@ -487,6 +549,18 @@ class ConversationService:
                 state="started" if event.type == "agent_start" else "completed",
                 agent_name=event.agent_name,
                 agent_plan=event.agent_plan,
+                task_id=event.task_id or None,
+                task_result=event.task_result,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type in {"synthesis_start", "synthesis_end"}:
+            status_data = ChatStreamStatus(
+                phase="synthesis",
+                state=(
+                    "started" if event.type == "synthesis_start" else "completed"
+                ),
+                agent_name=event.agent_name or None,
             )
             return ConversationStreamEvent(name="status", data=status_data)
 
@@ -503,6 +577,8 @@ class ConversationService:
                 state="started",
                 tool_calls=event.tool_calls,
                 tool_names=list(event.tool_names),
+                agent_name=event.agent_name or None,
+                task_id=event.task_id or None,
             )
             return ConversationStreamEvent(name="status", data=status_data)
 
@@ -513,6 +589,8 @@ class ConversationService:
                 tool_calls=event.tool_calls,
                 tool_names=list(event.tool_names),
                 tool_results=list(event.tool_results),
+                agent_name=event.agent_name or None,
+                task_id=event.task_id or None,
             )
             return ConversationStreamEvent(name="status", data=status_data)
 

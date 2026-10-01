@@ -25,7 +25,7 @@ from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.ai.model_client import ModelClient, create_model_client
-from app.ai.multi_agent.schemas import AgentPlan
+from app.ai.multi_agent.schemas import AgentPlan, AgentTaskResult
 from app.ai.multi_agent.supervisor import Supervisor, format_agent_context, tools_for_plan
 from app.ai.query_preprocessor import (
     QueryAnalysis,
@@ -62,6 +62,7 @@ class RuntimeResult:
     tool_calls: int
     query_analysis: QueryAnalysis | None = None
     agent_plan: AgentPlan | None = None
+    task_results: tuple[AgentTaskResult, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,8 @@ class RuntimeStreamEvent:
         "supervisor_end",
         "agent_start",
         "agent_end",
+        "synthesis_start",
+        "synthesis_end",
         "model_start",
         "delta",
         "tool_start",
@@ -85,6 +88,8 @@ class RuntimeStreamEvent:
     query_analysis: QueryAnalysis | None = None
     agent_plan: AgentPlan | None = None
     agent_name: str = ""
+    task_id: str = ""
+    task_result: AgentTaskResult | None = None
     tool_calls: int = 0
     tool_names: tuple[str, ...] = ()
     tool_results: tuple[dict[str, Any], ...] = ()
@@ -770,12 +775,9 @@ class CustomerServiceRuntime:
         )
 
 
-def create_customer_service_runtime() -> CustomerServiceRuntime:
-    """使用当前服务端模型配置创建客服运行时。"""
+def create_customer_service_runtime() -> Any:
+    """创建生产任务级多 Agent 运行时。"""
 
-    model_client = create_model_client()
-    query_preprocessor = create_query_preprocessor()
-    return CustomerServiceRuntime(
-        model_client=model_client,
-        query_preprocessor=query_preprocessor,
-    )
+    from app.ai.multi_agent.runtime import create_multi_agent_runtime
+
+    return create_multi_agent_runtime()

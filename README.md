@@ -98,7 +98,8 @@ npm run format:check
 - Pydantic 商品格式、SQLAlchemy 商品仓库、商品筛选、排序和分页服务；JSON 仅作为首次初始化种子。
 - 可供模型调用的商品搜索与详情工具。
 - 支持 OpenAI 和 OpenAI 兼容服务的模型客户端。
-- 使用 LangGraph 编排 Supervisor 多 Agent 工作流；商品、订单、售后、知识库和通用 Agent 按意图分工，并只绑定各自的工具白名单。
+- 使用 LangGraph 编排任务级 Supervisor 多 Agent 工作流；Supervisor 将复合 Query 拆成带依赖的任务 DAG，无依赖领域 Agent 并行执行、有依赖任务顺序执行，最后由无工具权限的汇总 Agent 统一回答。
+- 商品、订单、售后、知识库和通用 Agent 使用独立上下文及最小工具集；调度计划、任务结果、耗时、调用次数和错误持久化到 Agent 运行记录表。
 - 使用本地 `BAAI/bge-small-zh-v1.5` ONNX Embedding 完成语义意图路由，并为 RAG 文档和 Query 生成 512 维真实语义向量。
 - 会话、消息、聊天请求与响应的数据格式。
 - SQLAlchemy 会话仓库和服务，支持重启恢复、买家隔离、历史消息转换、失败回滚和同会话串行处理。
@@ -113,7 +114,7 @@ npm run format:check
 - RAG评测支持同集比较关键词、BGE+Milvus向量、加权混合和BGE重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。
 - JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
-- 175 项后端测试，包含多 Agent 路由、复合任务工具合并和跨领域工具越权拦截。
+- 178 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、运行记录持久化和跨领域工具越权拦截。
 
 ## 代码导览
 
@@ -146,6 +147,7 @@ backend/
   app/ai/query_preprocessor.py Query 清洗、语义意图路由、上下文补全和实体提取
   app/ai/runtime.py       LangGraph 客服运行图
   app/ai/multi_agent/    Supervisor、领域 Agent 定义、调度计划和工具权限
+  app/modules/agent_runs/ Agent 运行与领域任务结果的数据库模型和仓库
   app/ai/tools/catalog.py AI 商品搜索与详情工具
   app/ai/tools/orders.py  AI 订单与物流查询工具
   app/ai/tools/after_sales.py AI 售后查询与待确认草稿工具
@@ -168,8 +170,8 @@ backend/
 ```
 
 商品咨询数据流是：**用户消息 → `/api/chat/stream` → 会话服务 → Query 规范化与语义路由
-→ Supervisor 选择商品 Agent → 绑定商品工具白名单 → 商品工具节点 → 商品数据
-→ 模型最终回复与 SSE 文本片段 → 保存会话**。
+→ Supervisor 生成任务 DAG → 独立领域 Agent 顺序或并行执行 → 汇总 Agent
+→ SSE 最终文本 → 保存会话和 Agent 运行记录**。
 
 商城数据流是：**商城搜索或筛选 → `/api/products` → 商品服务 → 后端商品数据 → 页面陈列；
 点击商品 → `/api/products/{product_id}` → 商品详情**。商城和 AI 商品工具由同一个后端

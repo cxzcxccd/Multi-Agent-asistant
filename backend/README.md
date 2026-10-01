@@ -20,12 +20,14 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 - 基于本地中文 FastEmbed 模型的 Query 语义路由，包含文本规范化、多轮上下文补全、意图识别、实体提取和业务 Query 整理。
 - 索引重建仅为新增或内容变化的片段生成向量；未变化片段直接复用已有向量。
 - OpenAI 与 OpenAI 兼容接口的模型客户端。
-- LangGraph `preprocess → supervisor → domain agent → tools` 多 Agent 客服运行图；Supervisor 根据主次意图选择商品、订单、售后、知识库或通用 Agent。
-- 各领域 Agent 只绑定自己的最小工具集，执行前再次校验工具白名单；复合问题会合并所需 Agent 的工具权限。
+- LangGraph `preprocess → supervisor → execute_tasks → synthesis` 任务级多 Agent 客服图；Supervisor 根据主次意图拆分商品、订单、售后、知识库或通用任务。
+- 无依赖任务通过 `asyncio.gather` 并行执行；订单到售后等带依赖任务按照 DAG 顺序执行，每个领域 Agent 使用独立消息上下文和最小工具集。
+- 汇总 Agent 不绑定任何业务工具，只读取结构化 `AgentTaskResult`；调度计划、任务结果、耗时和错误保存到 `agent_runs` 与 `agent_run_tasks`。
 - 面向数码商品售前咨询的中文系统提示词。
 - 会话、消息、聊天请求、聊天响应和运行统计的数据格式。
 - 数据库会话仓库和会话服务，可在服务重启后恢复会话并继续调用 LangGraph 客服运行时。
 - `/api/chat`、`/api/chat/stream`、会话列表和会话详情接口，以及稳定的业务错误状态码。
+- `/api/conversations/{conversation_id}/agent-runs` 按买家权限返回调度计划、领域任务结果与运行指标。
 - LangGraph 模型文本、业务工具进度和最终结果的 SSE 流式协议。
 - 商品、模型、LangGraph 和会话模块的自动化测试。
 
@@ -52,9 +54,9 @@ AI 商品咨询调用链：
 用户消息
   → CustomerServiceRuntime
   → LangGraph preprocess 节点规范化 Query 并识别意图
-  → Supervisor 选择商品 Agent
+  → Supervisor 拆分商品任务
   → 商品 Agent 仅绑定 search_products 与 get_product
-  → LangGraph model 节点
+  → 独立任务结果交给 synthesis 汇总 Agent
   → ModelClient 调用聊天模型
   → 模型请求业务工具时进入 tools 节点
   → ProductService / ProductRepository
@@ -76,9 +78,10 @@ AI 商品咨询调用链：
 LangGraph 当前结构：
 
 ```text
-START → preprocess → supervisor → domain agent/model ──无工具调用──→ END
-                                             │
-                                             └──有工具调用──→ tools ──→ model
+START → preprocess → supervisor → execute_tasks → synthesis → END
+                                  │
+                                  ├─无依赖任务并行
+                                  └─有依赖任务按 DAG 顺序执行
 ```
 
 订单查询调用链：
@@ -147,9 +150,11 @@ backend/
 │  │  │  工具轮数、隔离工具错误和校验对话输入。
 │  │  ├─ multi_agent/
 │  │  │  ├─ schemas.py
-│  │  │  │  定义领域 Agent 名称和可序列化的 AgentPlan 调度计划。
+│  │  │  │  定义 AgentPlan、AgentTask、AgentTaskResult 和持久化运行快照。
 │  │  │  └─ supervisor.py
-│  │  │     将语义意图映射到领域 Agent，生成工具白名单，并支持复合意图的最小权限合并。
+│  │  │     将语义意图映射到领域任务，生成依赖关系、执行模式和工具白名单。
+│  │  │  └─ runtime.py
+│  │  │     执行任务 DAG、并行领域 Agent、工具循环及最终无工具汇总。
 │  │  ├─ prompts/
 │  │  │  └─ customer_service.md
 │  │  │     客服系统提示词，要求商品事实来自工具、信息不足时追问，并禁止编造。
@@ -473,7 +478,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 175 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 178 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -484,4 +489,4 @@ uv run --no-cache pytest -q
 2. 为 SSE 增加刷新后的自动重连、断线恢复游标和生产环境代理配置。
 3. 增加登录限流、认证审计和签名密钥轮换机制。
 
-Supervisor 多 Agent 第一版已完成。下一步可增加任务依赖图、并行执行、用户确认节点和 Agent 运行记录持久化；MCP 尚未接入。
+任务级 Supervisor、依赖图、并行执行、汇总 Agent 和运行记录持久化已经完成。下一步可增加跨进程任务队列、运行中断恢复和需要用户确认的 LangGraph interrupt；MCP 尚未接入。

@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.modules.auth import models as auth_models
 from app.modules.after_sales import models as after_sales_models
+from app.modules.agent_runs import models as agent_run_models
 from app.modules.catalog import models as catalog_models
 from app.modules.conversations import models as conversation_models
 from app.modules.knowledge import models as knowledge_models

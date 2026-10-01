@@ -1084,8 +1084,8 @@ async function sendBackendReply(input: BackendReplyInput) {
           if (supervisorEvent && plan) {
             Object.assign(supervisorEvent, {
               status: 'success',
-              output: plan.agents.join('、'),
-              description: plan.reason,
+              output: `${plan.execution_mode === 'parallel' ? '并行' : '顺序'}执行：${plan.agents.join('、')}`,
+              description: `${plan.reason} 共拆分 ${plan.tasks.length} 个独立任务。`,
               result: plan.allowed_tools.length
                 ? `工具白名单：${plan.allowed_tools.join('、')}`
                 : '本轮不开放业务工具',
@@ -1095,10 +1095,11 @@ async function sendBackendReply(input: BackendReplyInput) {
         }
 
         if (data.phase === 'agent' && data.state === 'started' && data.agent_name) {
+          const taskName = data.task_id || data.agent_name;
           run.events.push({
             id: uid(),
             type: 'Agent',
-            name: data.agent_name,
+            name: taskName,
             label: data.agent_name,
             status: 'running',
             output: `${data.agent_name} 正在处理`,
@@ -1109,12 +1110,31 @@ async function sendBackendReply(input: BackendReplyInput) {
 
         if (data.phase === 'agent' && data.state === 'completed' && data.agent_name) {
           const agentEvent = run.events.find(
-            (event) => event.name === data.agent_name && event.status === 'running',
+            (event) =>
+              event.name === (data.task_id || data.agent_name) && event.status === 'running',
           );
           if (agentEvent) {
-            agentEvent.status = 'success';
-            agentEvent.output = `${data.agent_name} 已完成`;
+            const failed = data.task_result?.status === 'failed';
+            agentEvent.status = failed ? 'error' : 'success';
+            agentEvent.output = failed
+              ? `${data.agent_name} 执行失败`
+              : `${data.agent_name} 已完成`;
+            agentEvent.result = data.task_result?.summary;
+            agentEvent.description = data.task_result?.error || agentEvent.description;
           }
+          return;
+        }
+
+        if (data.phase === 'synthesis' && data.state === 'started') {
+          run.events.push({
+            id: uid(),
+            type: 'Summary',
+            name: 'synthesis_agent',
+            label: '汇总 Agent',
+            status: 'running',
+            output: '正在汇总领域 Agent 结果',
+            description: '汇总 Agent 不绑定业务工具，只根据结构化任务结果回答。',
+          });
           return;
         }
 
@@ -1145,11 +1165,12 @@ async function sendBackendReply(input: BackendReplyInput) {
             (event) => !(event.type === 'Summary' && event.status === 'running'),
           );
           const toolNames = data.tool_names?.length ? data.tool_names : ['unknown_tool'];
+          const toolEventName = `${data.task_id || 'task'}|${toolNames.join(', ')}`;
           const retrievingKnowledge = toolNames.includes('search_knowledge');
           run.events.push({
             id: uid(),
             type: retrievingKnowledge ? 'Retrieval' : 'Tool',
-            name: toolNames.join(', '),
+            name: toolEventName,
             label: retrievingKnowledge ? '检索' : '工具',
             status: 'running',
             output: retrievingKnowledge
@@ -1163,7 +1184,12 @@ async function sendBackendReply(input: BackendReplyInput) {
         let toolEvent: RunEvent | undefined;
         for (let index = run.events.length - 1; index >= 0; index -= 1) {
           const event = run.events[index];
-          if ((event.type === 'Tool' || event.type === 'Retrieval') && event.status === 'running') {
+          const sameTask = !data.task_id || event.name.startsWith(`${data.task_id}|`);
+          if (
+            sameTask &&
+            (event.type === 'Tool' || event.type === 'Retrieval') &&
+            event.status === 'running'
+          ) {
             toolEvent = event;
             break;
           }
