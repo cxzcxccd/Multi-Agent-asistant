@@ -18,11 +18,13 @@ from app.ai.multi_agent.schemas import AgentRunRecord
 from app.ai.runtime import create_customer_service_runtime
 from app.modules.conversations.schemas import (
     BuyerId,
+    ChatConfirmationRequired,
     ChatRequest,
     ChatResponse,
     ChatStreamError,
     Conversation,
     HandoffRequest,
+    ResumeConfirmationRequest,
     StaffModeRequest,
     StaffReplyRequest,
 )
@@ -96,7 +98,7 @@ def raise_http_error(error: ConversationServiceError) -> NoReturn:
 
 @router.post(
     "/chat",
-    response_model=ChatResponse,
+    response_model=ChatResponse | ChatConfirmationRequired,
     responses={
         status.HTTP_403_FORBIDDEN: {"description": "无权访问该会话"},
         status.HTTP_404_NOT_FOUND: {"description": "会话不存在"},
@@ -109,7 +111,7 @@ async def chat(
     request: ChatRequest,
     service: ConversationServiceDependency,
     user: BuyerPrincipal,
-) -> ChatResponse:
+) -> ChatResponse | ChatConfirmationRequired:
     """创建新会话或在已有会话中发送一条用户消息。"""
 
     try:
@@ -151,6 +153,29 @@ async def stream_chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post(
+    "/conversations/{conversation_id}/resume",
+    response_model=ChatResponse,
+    summary="恢复等待买家确认的AI工作流",
+)
+async def resume_confirmation(
+    conversation_id: Annotated[UUID, Path(description="会话编号")],
+    request: ResumeConfirmationRequest,
+    service: ConversationServiceDependency,
+    user: BuyerPrincipal,
+) -> ChatResponse:
+    """确认或取消售后草稿，并从SQLite Checkpoint继续执行。"""
+
+    try:
+        return await service.resume_confirmation(
+            conversation_id,
+            user.buyer_id,
+            request,
+        )
+    except ConversationServiceError as error:
+        raise_http_error(error)
 
 
 @router.get(

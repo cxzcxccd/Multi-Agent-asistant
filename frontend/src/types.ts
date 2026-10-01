@@ -28,6 +28,8 @@ export interface Draft {
   kind: string;
   reason: string;
   revision: number;
+  resumeRequired?: boolean;
+  assistantMessageId?: string;
 }
 export interface Message {
   id: string;
@@ -49,7 +51,7 @@ export interface Conversation {
   buyer: BuyerId;
   title: string;
   createdAt: string;
-  mode: 'ai' | 'waiting' | 'human' | 'closed';
+  mode: 'ai' | 'awaiting_confirmation' | 'waiting' | 'human' | 'closed';
   messages: Message[];
   context: {
     orderId?: string;

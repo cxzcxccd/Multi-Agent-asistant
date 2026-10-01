@@ -17,7 +17,13 @@ import { Badge, Modal, OrderCard, RequestCard, timeLabel } from './components';
 import { MessageFeed } from './Chat';
 import type { AfterSale } from './types';
 
-const modes = { ai: 'AI 服务中', waiting: '待人工接管', human: '人工服务中', closed: '已结束' };
+const modes = {
+  ai: 'AI 服务中',
+  awaiting_confirmation: '等待买家确认',
+  waiting: '待人工接管',
+  human: '人工服务中',
+  closed: '已结束',
+};
 export default function Workbench({
   active = true,
   productQuote,

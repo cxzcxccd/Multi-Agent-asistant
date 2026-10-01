@@ -101,6 +101,7 @@ npm run format:check
 - 使用 LangGraph 编排任务级 Supervisor 多 Agent 工作流；Supervisor 将复合 Query 拆成带依赖的任务 DAG，无依赖领域 Agent 并行执行、有依赖任务顺序执行，最后由无工具权限的汇总 Agent 统一回答。
 - 商品、订单、售后、知识库和通用 Agent 使用独立上下文及最小工具集；调度计划、任务结果、耗时、调用次数和错误持久化到 Agent 运行记录表。
 - 使用独立 SQLite `checkpoints.db` 保存 LangGraph 顶层状态和领域任务子图结果；同一轮执行恢复时复用已完成任务，避免重复调用模型或业务工具。
+- 售后 Agent 生成草稿后使用 LangGraph `interrupt` 暂停；前端确认卡片提交决定后调用恢复接口，通过 `Command(resume=...)` 从原检查点继续汇总。等待期间会话禁止新 AI 请求，身份、订单号和重复恢复均由后端校验。
 - 使用本地 `BAAI/bge-small-zh-v1.5` ONNX Embedding 完成语义意图路由，并为 RAG 文档和 Query 生成 512 维真实语义向量。
 - 会话、消息、聊天请求与响应的数据格式。
 - SQLAlchemy 会话仓库和服务，支持重启恢复、买家隔离、历史消息转换、失败回滚和同会话串行处理。
@@ -115,7 +116,7 @@ npm run format:check
 - RAG评测支持同集比较关键词、BGE+Milvus向量、加权混合和BGE重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。
 - JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；MCP 尚未实现。
-- 179 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、Checkpoint 恢复、运行记录持久化和跨领域工具越权拦截。
+- 182 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、Checkpoint 恢复、售后确认并发控制、运行记录持久化和跨领域工具越权拦截。
 
 ## 代码导览
 

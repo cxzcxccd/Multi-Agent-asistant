@@ -9,7 +9,8 @@ from langchain_core.runnables import RunnableConfig
 
 from app.ai.checkpoints import open_sqlite_checkpointer
 from app.ai.multi_agent.runtime import MultiAgentRuntime
-from app.ai.multi_agent.schemas import AgentName
+from app.ai.multi_agent.schemas import AgentName, AgentTask, AgentTaskResult
+from app.ai.runtime import RuntimePause
 from app.ai.query_preprocessor import IntentName
 from tests.test_multi_agent import make_analysis
 
@@ -92,6 +93,45 @@ class SynthesisClient:
         del config
         self.messages = list(messages)
         yield AIMessageChunk(content=self.answer)
+
+
+class ConfirmationRuntime(MultiAgentRuntime):
+    """直接返回售后草稿，用于验证LangGraph中断与恢复。"""
+
+    async def _execute_task_body(
+        self,
+        task: AgentTask,
+        state: Any,
+        previous_results: list[AgentTaskResult],
+        config: RunnableConfig,
+    ) -> AgentTaskResult:
+        del state, previous_results, config
+        return AgentTaskResult(
+            task_id=task.id,
+            agent_name=task.agent_name,
+            status="completed",
+            summary="已准备退货草稿。",
+            tool_results=[
+                {
+                    "name": "prepare_after_sale_draft",
+                    "output": {
+                        "success": True,
+                        "artifact": {
+                            "type": "after_sale_draft",
+                            "requires_confirmation": True,
+                            "draft": {
+                                "order_id": "10002",
+                                "request_type": "退货",
+                                "reason": "商品无法正常开机",
+                            },
+                        },
+                    },
+                }
+            ],
+            model_calls=1,
+            tool_calls=1,
+            tool_rounds=1,
+        )
 
 
 def test_independent_product_and_order_tasks_run_in_parallel() -> None:
@@ -187,3 +227,56 @@ def test_completed_agent_task_is_reused_from_sqlite_checkpoint(tmp_path: Any) ->
 
     assert calls == ["product"]
     assert checkpoint_path.exists()
+
+
+def test_after_sale_workflow_interrupts_and_resumes_from_checkpoint(
+    tmp_path: Any,
+) -> None:
+    """售后草稿必须等待买家决定，恢复后才进入汇总Agent。"""
+
+    checkpoint_path = tmp_path / "confirmation.db"
+
+    async def run_confirmation() -> None:
+        async with open_sqlite_checkpointer(
+            checkpoint_path.as_posix()
+        ) as checkpointer:
+            calls: list[str] = []
+            domain_client = DirectClient("unused", calls, "after_sales")
+            synthesis = SynthesisClient("已根据你的确认继续处理。")
+            runtime = ConfirmationRuntime(
+                model_client=domain_client,
+                query_preprocessor=FixedPreprocessor(IntentName.AFTER_SALE),
+                agent_clients={AgentName.AFTER_SALES: domain_client},
+                synthesis_client=synthesis,
+                checkpointer=checkpointer,
+            )
+            config: RunnableConfig = {
+                "configurable": {
+                    "thread_id": "conversation-confirmation-1",
+                    "buyer_id": "A",
+                }
+            }
+            message = HumanMessage(id="confirmation-message-1", content="我要退货")
+
+            paused = await runtime.ainvoke([message], config=config)
+
+            assert isinstance(paused, RuntimePause)
+            assert paused.confirmation["type"] == "after_sale_draft"
+            assert synthesis.messages == []
+
+            completed = await runtime.aresume(
+                {
+                    "action": "confirm",
+                    "draft": {
+                        "order_id": "10002",
+                        "request_type": "退货",
+                        "reason": "商品无法正常开机",
+                    },
+                },
+                config,
+            )
+
+            assert completed.reply.text == "已根据你的确认继续处理。"
+            assert "confirm" in str(synthesis.messages[0].content)
+
+    asyncio.run(run_confirmation())

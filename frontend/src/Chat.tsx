@@ -273,11 +273,13 @@ export default function Chat({ active = true }: { active?: boolean }) {
               <span className={`status-dot ${c.mode === 'ai' ? 'online' : ''}`} />
               {c.mode === 'ai'
                 ? '购物助手在线'
-                : c.mode === 'waiting'
-                  ? '等待人工接入'
-                  : c.mode === 'human'
-                    ? '人工客服小周服务中'
-                    : '会话已结束'}
+                : c.mode === 'awaiting_confirmation'
+                  ? '等待你确认售后草稿'
+                  : c.mode === 'waiting'
+                    ? '等待人工接入'
+                    : c.mode === 'human'
+                      ? '人工客服小周服务中'
+                      : '会话已结束'}
               <span className="heading-separator">/</span>所有业务数据均为模拟
             </p>
           </div>
@@ -298,33 +300,39 @@ export default function Chat({ active = true }: { active?: boolean }) {
           </button>
         </div>
         <MessageFeed conversation={c} active={active} />
-        {c.mode === 'waiting' || c.mode === 'human' ? (
+        {c.mode === 'awaiting_confirmation' || c.mode === 'waiting' || c.mode === 'human' ? (
           <div className="service-banner">
-            <Headphones size={16} />
-            {c.mode === 'waiting'
-              ? '正在等待人工接入，你可以继续补充问题。'
-              : '小周正在为你服务，AI 自动回复已暂停。'}
+            {c.mode === 'awaiting_confirmation' ? (
+              <ShieldCheck size={16} />
+            ) : (
+              <Headphones size={16} />
+            )}
+            {c.mode === 'awaiting_confirmation'
+              ? '工作流已暂停，请先确认或取消售后草稿。'
+              : c.mode === 'waiting'
+                ? '正在等待人工接入，你可以继续补充问题。'
+                : '小周正在为你服务，AI 自动回复已暂停。'}
           </div>
         ) : null}
         <div className="composer-area">
           <div className="quick-prompts">
             <button
               onClick={() => void sendMessage(c.id, '查一下我的订单')}
-              disabled={running || c.mode === 'closed'}
+              disabled={running || c.mode === 'closed' || c.mode === 'awaiting_confirmation'}
             >
               <Truck size={14} />
               我的订单
             </button>
             <button
               onClick={() => void sendMessage(c.id, '我想申请售后')}
-              disabled={running || c.mode === 'closed'}
+              disabled={running || c.mode === 'closed' || c.mode === 'awaiting_confirmation'}
             >
               <ShieldCheck size={14} />
               申请售后
             </button>
             <button
               onClick={() => void sendMessage(c.id, '店铺有哪些规则')}
-              disabled={running || c.mode === 'closed'}
+              disabled={running || c.mode === 'closed' || c.mode === 'awaiting_confirmation'}
             >
               <ShoppingBag size={14} />
               店铺规则
@@ -335,6 +343,8 @@ export default function Chat({ active = true }: { active?: boolean }) {
               <MessageSquarePlus size={17} />
               开始新的咨询
             </button>
+          ) : c.mode === 'awaiting_confirmation' ? (
+            <p className="muted">请在上方售后卡片中完成当前确认。</p>
           ) : (
             <form
               className="composer"

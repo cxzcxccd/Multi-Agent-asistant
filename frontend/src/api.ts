@@ -151,7 +151,7 @@ export interface ApiConversation {
   id: string;
   buyer_id: BuyerId;
   title: string;
-  mode: 'ai' | 'waiting' | 'human' | 'closed';
+  mode: 'ai' | 'awaiting_confirmation' | 'waiting' | 'human' | 'closed';
   messages: ApiMessage[];
   created_at: string;
   updated_at: string;
@@ -297,7 +297,7 @@ export function subscribeToStaffConversations(
 
 export interface ChatResponse {
   conversation_id: string;
-  mode: 'ai' | 'waiting' | 'human' | 'closed';
+  mode: 'ai' | 'awaiting_confirmation' | 'waiting' | 'human' | 'closed';
   user_message: ApiMessage;
   assistant_message: ApiMessage;
   run: {
@@ -399,7 +399,21 @@ export interface ChatStreamCallbacks {
   onStart: (data: ChatStreamStart) => void;
   onStatus: (data: ChatStreamStatus) => void;
   onDelta: (content: string) => void;
+  onConfirmationRequired: (data: ChatConfirmationRequired) => void;
   onComplete: (response: ChatResponse) => void;
+}
+
+export interface ChatConfirmationRequired {
+  conversation_id: string;
+  mode: 'awaiting_confirmation';
+  user_message: ApiMessage;
+  assistant_message_id: string;
+  confirmation: {
+    type: string;
+    requires_confirmation: boolean;
+    draft?: unknown;
+  };
+  run: ChatResponse['run'];
 }
 
 export class ChatApiError extends Error {
@@ -753,6 +767,11 @@ function handleSseEvent(event: ParsedSseEvent, callbacks: ChatStreamCallbacks) {
     return;
   }
 
+  if (event.name === 'confirmation_required') {
+    callbacks.onConfirmationRequired(event.data as ChatConfirmationRequired);
+    return;
+  }
+
   if (event.name === 'error') {
     const error = event.data as { detail: string; status: number };
     throw new ChatApiError(error.detail, error.status);
@@ -814,7 +833,7 @@ export async function streamChatMessage(
       const event = parseSseEvent(block);
       if (event !== null) {
         handleSseEvent(event, callbacks);
-        if (event.name === 'complete') {
+        if (event.name === 'complete' || event.name === 'confirmation_required') {
           streamCompleted = true;
         }
       }
@@ -825,4 +844,26 @@ export async function streamChatMessage(
   if (!streamCompleted) {
     throw new ChatApiError('客服流式响应提前结束', 502);
   }
+}
+
+export async function resumeAgentWorkflow(
+  buyerId: BuyerId,
+  conversationId: string,
+  action: 'confirm' | 'cancel',
+  draft?: { order_id: string; request_type: '退货' | '换货'; reason: string },
+): Promise<ChatResponse> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/conversations/${conversationId}/resume`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, draft }),
+    },
+    { role: 'buyer', buyerId },
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new ChatApiError(body?.detail || `恢复工作流失败（${response.status}）`, response.status);
+  }
+  return (await response.json()) as ChatResponse;
 }

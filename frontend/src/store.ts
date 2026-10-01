@@ -8,6 +8,7 @@ import {
   listPendingAfterSales,
   reviewAfterSale,
   requestHumanHandoff,
+  resumeAgentWorkflow,
   sendStaffMessage,
   streamChatMessage,
   submitAfterSaleDraft,
@@ -400,7 +401,41 @@ export function editDraft(conversationId: string, patch: Pick<Draft, 'kind' | 'r
     if (c?.draft) c.draft = { ...c.draft, ...patch, revision: c.draft.revision + 1 };
   });
 }
-export function cancelDraft(conversationId: string) {
+export async function cancelDraft(conversationId: string): Promise<void> {
+  const conversation = getConversation(conversationId);
+  const draft = conversation?.draft;
+  if (useBackendChat && conversation?.remoteId && draft?.resumeRequired) {
+    try {
+      const response = await resumeAgentWorkflow(
+        conversation.buyer,
+        conversation.remoteId,
+        'cancel',
+      );
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === conversationId);
+        if (!current?.draft || current.draft.id !== draft.id) return;
+        const message = current.messages.find((item) => item.id === draft.assistantMessageId);
+        if (message) {
+          Object.assign(message, {
+            id: response.assistant_message.id,
+            text: response.assistant_message.content,
+            time: response.assistant_message.created_at,
+            streaming: false,
+          });
+        }
+        current.mode = response.mode;
+        delete current.draft;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '取消草稿失败。';
+      update((s) => {
+        const current = s.conversations.find((item) => item.id === conversationId);
+        if (current) addMessage(current, 'system', message);
+      });
+    }
+    return;
+  }
+
   update((s) => {
     const c = s.conversations.find((c) => c.id === conversationId && c.buyer === s.buyer);
     if (!c?.draft) return;
@@ -533,6 +568,20 @@ async function submitDraftToBackend(
     });
   }
 
+  let resumedResponse: Awaited<ReturnType<typeof resumeAgentWorkflow>> | undefined;
+  if (draft.resumeRequired && conversation.remoteId) {
+    resumedResponse = await resumeAgentWorkflow(
+      conversation.buyer,
+      conversation.remoteId,
+      'confirm',
+      {
+        order_id: draft.orderId,
+        request_type: requestTypeFromDraft(draft.kind),
+        reason: draft.reason.trim(),
+      },
+    );
+  }
+
   update((s) => {
     const current = s.conversations.find((item) => item.id === conversationId);
     if (!current?.draft || current.draft.id !== draftId) return;
@@ -540,11 +589,27 @@ async function submitDraftToBackend(
     const request = mapAfterSaleRequest(submitted, conversationId, draftId);
     s.requests = s.requests.filter((item) => item.id !== request.id);
     s.requests.unshift(request);
+    if (resumedResponse) {
+      const message = current.messages.find(
+        (item) => item.id === current.draft?.assistantMessageId,
+      );
+      if (message) {
+        Object.assign(message, {
+          id: resumedResponse.assistant_message.id,
+          text: resumedResponse.assistant_message.content,
+          time: resumedResponse.assistant_message.created_at,
+          streaming: false,
+          requestId: request.id,
+        });
+      }
+      current.mode = resumedResponse.mode;
+    } else {
+      addMessage(current, 'assistant', '申请已提交，正在等待客服审核。你可以在这里查看进度。', {
+        requestId: request.id,
+        origin: 'backend',
+      });
+    }
     delete current.draft;
-    addMessage(current, 'assistant', '申请已提交，正在等待客服审核。你可以在这里查看进度。', {
-      requestId: request.id,
-      origin: 'backend',
-    });
   });
 }
 
@@ -1228,6 +1293,34 @@ async function sendBackendReply(input: BackendReplyInput) {
         }
       });
     },
+    onConfirmationRequired(data) {
+      if (!isLive()) return;
+      update((s) => {
+        const target = s.conversations.find((item) => item.id === conversationId)!;
+        const run = s.runs.find((item) => item.id === runId)!;
+        const message = target.messages.find((item) => item.id === streamingMessageId);
+        target.remoteId = data.conversation_id;
+        target.mode = data.mode;
+        if (message) {
+          message.text = '售后申请草稿已经准备好，请核对后确认或取消。';
+          message.streaming = false;
+        }
+        if (target.draft) {
+          target.draft.resumeRequired = true;
+          target.draft.assistantMessageId = streamingMessageId;
+        }
+        run.status = 'stopped';
+        run.events.push({
+          id: uid(),
+          type: 'Agent',
+          name: 'buyer_confirmation',
+          label: '买家确认',
+          status: 'stopped',
+          output: '工作流已暂停',
+          description: 'LangGraph 已保存状态，等待买家确认售后草稿。',
+        });
+      });
+    },
     onComplete(response) {
       if (!isLive()) {
         return;
@@ -1354,6 +1447,7 @@ export async function sendMessage(conversationId: string, value: string) {
     !c ||
     c.buyer !== state.buyer ||
     c.mode === 'closed' ||
+    c.mode === 'awaiting_confirmation' ||
     tokens.has(conversationId) ||
     state.runs.some((r) => r.conversationId === conversationId && r.status === 'running')
   )

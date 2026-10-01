@@ -22,6 +22,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command, interrupt
 
 from app.ai.model_client import ModelClient, create_model_client
 from app.ai.multi_agent.schemas import AgentName, AgentPlan, AgentTask, AgentTaskResult
@@ -37,6 +38,7 @@ from app.ai.runtime import (
     RuntimeErrorBase,
     RuntimeInputError,
     RuntimeLoopLimitError,
+    RuntimePause,
     RuntimeResult,
     RuntimeStreamEvent,
     load_customer_service_prompt,
@@ -54,6 +56,7 @@ class MultiAgentState(TypedDict):
     model_calls: int
     tool_rounds: int
     tool_calls: int
+    confirmation: dict[str, Any] | None
 
 
 class AgentTaskCheckpointState(TypedDict):
@@ -99,13 +102,28 @@ class MultiAgentRuntime:
         self,
         messages: Sequence[BaseMessage],
         config: RunnableConfig | None = None,
-    ) -> RuntimeResult:
+    ) -> RuntimeResult | RuntimePause:
         prepared = self._validate_messages(messages)
         state = await self._graph.ainvoke(
             self._initial_state(prepared),
             config=dict(config or {}),
         )
-        return self._build_result(state)
+        return self._build_output(state)
+
+    async def aresume(
+        self,
+        decision: dict[str, Any],
+        config: RunnableConfig,
+    ) -> RuntimeResult:
+        """从当前会话的持久化中断点继续执行。"""
+
+        if self._checkpointer is None:
+            raise RuntimeErrorBase("当前运行时没有配置Checkpointer，无法恢复")
+        state = await self._graph.ainvoke(Command(resume=decision), config=config)
+        output = self._build_output(state)
+        if isinstance(output, RuntimePause):
+            raise RuntimeErrorBase("工作流恢复后仍然等待确认")
+        return output
 
     def invoke(
         self,
@@ -133,8 +151,15 @@ class MultiAgentRuntime:
 
         async def run_graph() -> None:
             try:
-                result = await self.ainvoke(messages, config=stream_config)
-                await event_queue.put(RuntimeStreamEvent(type="complete", result=result))
+                output = await self.ainvoke(messages, config=stream_config)
+                if isinstance(output, RuntimePause):
+                    event = RuntimeStreamEvent(
+                        type="confirmation_required",
+                        pause=output,
+                    )
+                else:
+                    event = RuntimeStreamEvent(type="complete", result=output)
+                await event_queue.put(event)
             except BaseException as error:
                 await event_queue.put(error)
             finally:
@@ -160,11 +185,20 @@ class MultiAgentRuntime:
         builder.add_node("preprocess", self._preprocess)
         builder.add_node("supervisor", self._supervise)
         builder.add_node("execute_tasks", self._execute_tasks)
+        builder.add_node("await_confirmation", self._await_confirmation)
         builder.add_node("synthesis", self._synthesize)
         builder.add_edge(START, "preprocess")
         builder.add_edge("preprocess", "supervisor")
         builder.add_edge("supervisor", "execute_tasks")
-        builder.add_edge("execute_tasks", "synthesis")
+        builder.add_conditional_edges(
+            "execute_tasks",
+            self._route_after_tasks,
+            {
+                "await_confirmation": "await_confirmation",
+                "synthesis": "synthesis",
+            },
+        )
+        builder.add_edge("await_confirmation", "synthesis")
         builder.add_edge("synthesis", END)
         return builder.compile(checkpointer=self._checkpointer)
 
@@ -261,6 +295,76 @@ class MultiAgentRuntime:
             "tool_calls": tool_calls,
             "tool_rounds": tool_rounds,
         }
+
+    def _route_after_tasks(self, state: MultiAgentState) -> str:
+        """只有生产运行时发现待确认售后草稿时才暂停。"""
+
+        if self._checkpointer is None:
+            return "synthesis"
+        task_results = self._validated_task_results(state)
+        confirmation = self._find_confirmation(task_results)
+        return "await_confirmation" if confirmation is not None else "synthesis"
+
+    async def _await_confirmation(
+        self,
+        state: MultiAgentState,
+    ) -> dict[str, dict[str, Any]]:
+        """暂停工作流，直到买家明确确认或取消售后草稿。"""
+
+        task_results = self._validated_task_results(state)
+        confirmation = self._find_confirmation(task_results)
+        if confirmation is None:
+            raise RuntimeErrorBase("未找到需要确认的售后草稿")
+
+        decision = interrupt(confirmation)
+        if not isinstance(decision, dict):
+            raise RuntimeInputError("确认结果格式不正确")
+        action = decision.get("action")
+        if action not in {"confirm", "cancel"}:
+            raise RuntimeInputError("确认操作只能是confirm或cancel")
+        if action == "confirm":
+            confirmed_draft = decision.get("draft")
+            original_draft = confirmation.get("draft")
+            if not isinstance(confirmed_draft, dict):
+                raise RuntimeInputError("确认售后申请时缺少最终草稿")
+            if not isinstance(original_draft, dict):
+                raise RuntimeErrorBase("中断状态中的售后草稿不完整")
+            if confirmed_draft.get("order_id") != original_draft.get("order_id"):
+                raise RuntimeInputError("恢复时不能更换售后申请对应的订单")
+        return {"confirmation": dict(decision)}
+
+    @staticmethod
+    def _find_confirmation(
+        results: list[AgentTaskResult],
+    ) -> dict[str, Any] | None:
+        """从结构化工具结果中提取需要买家确认的售后草稿。"""
+
+        for result in results:
+            for tool_result in result.tool_results:
+                if tool_result.get("name") != "prepare_after_sale_draft":
+                    continue
+                output = tool_result.get("output")
+                if not isinstance(output, dict):
+                    continue
+                artifact = output.get("artifact")
+                if not isinstance(artifact, dict):
+                    continue
+                if artifact.get("requires_confirmation") is not True:
+                    continue
+                return artifact
+        return None
+
+    @staticmethod
+    def _validated_task_results(state: MultiAgentState) -> list[AgentTaskResult]:
+        """把Checkpoint恢复出的字典统一还原成任务结果模型。"""
+
+        results: list[AgentTaskResult] = []
+        for value in state.get("task_results", []):
+            if isinstance(value, AgentTaskResult):
+                results.append(value)
+                continue
+            results.append(AgentTaskResult.model_validate(value))
+        return results
 
     async def _run_task(
         self,
@@ -540,12 +644,21 @@ class MultiAgentRuntime:
         ]
 
     def _synthesis_messages(self, state: MultiAgentState) -> list[BaseMessage]:
-        payload = [result.model_dump(mode="json") for result in state["task_results"]]
+        task_results = self._validated_task_results(state)
+        payload = []
+        for result in task_results:
+            payload.append(result.model_dump(mode="json"))
         prompt = (
             "你是电商客服的汇总 Agent。请只根据各领域 Agent 的结构化结果回答用户，"
             "合并重复信息，保留失败说明和知识来源，不得调用工具或编造事实。\n"
             f"领域结果：{json.dumps(payload, ensure_ascii=False)}"
         )
+        confirmation = state.get("confirmation")
+        if confirmation is not None:
+            prompt += "\n买家确认结果：" + json.dumps(
+                confirmation,
+                ensure_ascii=False,
+            )
         return [
             SystemMessage(content=prompt),
             *list(state["messages"]),
@@ -662,6 +775,7 @@ class MultiAgentRuntime:
             "model_calls": 0,
             "tool_rounds": 0,
             "tool_calls": 0,
+            "confirmation": None,
         }
 
     @staticmethod
@@ -679,7 +793,24 @@ class MultiAgentRuntime:
         return plan
 
     @staticmethod
-    def _build_result(state: MultiAgentState) -> RuntimeResult:
+    def _build_output(state: MultiAgentState) -> RuntimeResult | RuntimePause:
+        interrupts = state.get("__interrupt__", [])  # type: ignore[typeddict-item]
+        if interrupts:
+            confirmation = interrupts[0].value
+            if not isinstance(confirmation, dict):
+                raise RuntimeErrorBase("工作流中断数据格式不正确")
+            return RuntimePause(
+                confirmation=confirmation,
+                model_calls=state.get("model_calls", 0),
+                tool_rounds=state.get("tool_rounds", 0),
+                tool_calls=state.get("tool_calls", 0),
+                query_analysis=state.get("query_analysis"),
+                agent_plan=state.get("agent_plan"),
+                task_results=tuple(
+                    MultiAgentRuntime._validated_task_results(state)
+                ),
+            )
+
         reply = state.get("final_reply")
         if not isinstance(reply, AIMessage):
             raise RuntimeErrorBase("汇总 Agent 没有生成最终回复")
@@ -691,7 +822,7 @@ class MultiAgentRuntime:
             tool_calls=state.get("tool_calls", 0),
             query_analysis=state.get("query_analysis"),
             agent_plan=state.get("agent_plan"),
-            task_results=tuple(state.get("task_results", [])),
+            task_results=tuple(MultiAgentRuntime._validated_task_results(state)),
         )
 
     @staticmethod

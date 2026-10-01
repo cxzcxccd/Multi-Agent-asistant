@@ -40,6 +40,7 @@ class ConversationMode(StrEnum):
     """会话当前由谁处理以及是否已经结束。"""
 
     AI = "ai"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     WAITING = "waiting"
     HUMAN = "human"
     CLOSED = "closed"
@@ -168,6 +169,46 @@ class ChatResponse(BaseModel):
         if self.assistant_message.created_at < self.user_message.created_at:
             raise ValueError("AI 回复时间不能早于用户消息")
         return self
+
+
+class AfterSaleConfirmationDraft(BaseModel):
+    """买家最终核对过的售后申请内容。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    order_id: Annotated[str, StringConstraints(pattern=r"^\d{5}$")]
+    request_type: Literal["退货", "换货"]
+    reason: Annotated[str, StringConstraints(min_length=5, max_length=500)]
+
+
+class ResumeConfirmationRequest(BaseModel):
+    """买家恢复暂停工作流时提交的明确决定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["confirm", "cancel"]
+    draft: AfterSaleConfirmationDraft | None = None
+
+    @model_validator(mode="after")
+    def validate_confirmed_draft(self) -> Self:
+        """确认操作必须同时提交用户最终核对过的草稿。"""
+
+        if self.action == "confirm" and self.draft is None:
+            raise ValueError("确认售后申请时必须提交最终草稿")
+        return self
+
+
+class ChatConfirmationRequired(BaseModel):
+    """工作流暂停后返回给前端的售后确认信息。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: UUID
+    mode: Literal[ConversationMode.AWAITING_CONFIRMATION]
+    user_message: ConversationMessage
+    assistant_message_id: UUID
+    confirmation: dict[str, object]
+    run: ChatRunStats
 
 
 class ChatStreamStart(BaseModel):

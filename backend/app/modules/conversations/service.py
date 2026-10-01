@@ -13,14 +13,17 @@ from app.ai.model_client import ModelClientError
 from app.ai.multi_agent.schemas import AgentRunRecord
 from app.ai.runtime import (
     RuntimeErrorBase,
+    RuntimePause,
     RuntimeResult,
     RuntimeStreamEvent,
     create_customer_service_runtime,
 )
 from app.modules.conversations.repository import ConversationRepository
 from app.modules.conversations.schemas import (
+    AfterSaleConfirmationDraft,
     BuyerId,
     ChatRequest,
+    ChatConfirmationRequired,
     ChatResponse,
     ChatRunStats,
     ChatStreamDelta,
@@ -30,6 +33,7 @@ from app.modules.conversations.schemas import (
     ConversationMessage,
     ConversationMode,
     MessageRole,
+    ResumeConfirmationRequest,
     HandoffRequest,
     StaffModeRequest,
     StaffReplyRequest,
@@ -43,13 +47,19 @@ class RuntimeProtocol(Protocol):
         self,
         messages: Sequence[BaseMessage],
         config: dict[str, object] | None = None,
-    ) -> RuntimeResult: ...
+    ) -> RuntimeResult | RuntimePause: ...
 
     def astream(
         self,
         messages: Sequence[BaseMessage],
         config: dict[str, object] | None = None,
     ) -> AsyncIterator[RuntimeStreamEvent]: ...
+
+    async def aresume(
+        self,
+        decision: dict[str, object],
+        config: dict[str, object],
+    ) -> RuntimeResult: ...
 
 
 class ConversationStore(Protocol):
@@ -88,8 +98,16 @@ class PreparedTurn:
 class ConversationStreamEvent:
     """会话服务交给 SSE 路由的一个命名事件。"""
 
-    name: Literal["start", "status", "delta", "complete"]
-    data: ChatStreamStart | ChatStreamStatus | ChatStreamDelta | ChatResponse
+    name: Literal[
+        "start", "status", "delta", "confirmation_required", "complete"
+    ]
+    data: (
+        ChatStreamStart
+        | ChatStreamStatus
+        | ChatStreamDelta
+        | ChatConfirmationRequired
+        | ChatResponse
+    )
 
 
 class ConversationServiceError(RuntimeError):
@@ -131,6 +149,10 @@ class ConversationService:
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] = utc_now,
         agent_run_repository: AgentRunStore | None = None,
+        confirmation_checker: Callable[
+            [BuyerId, AfterSaleConfirmationDraft], bool
+        ]
+        | None = None,
     ) -> None:
         self.repository = repository or ConversationRepository()
         self._runtime = runtime
@@ -138,9 +160,15 @@ class ConversationService:
         self._id_factory = id_factory
         self._clock = clock
         self._agent_run_repository = agent_run_repository
+        self._confirmation_checker = (
+            confirmation_checker or self._has_submitted_after_sale
+        )
         self._conversation_locks: dict[UUID, asyncio.Lock] = {}
 
-    async def send_message(self, request: ChatRequest) -> ChatResponse:
+    async def send_message(
+        self,
+        request: ChatRequest,
+    ) -> ChatResponse | ChatConfirmationRequired:
         """创建或继续会话，调用客服图，并在成功后保存消息。"""
 
         conversation_id = request.conversation_id or self._id_factory()
@@ -150,14 +178,16 @@ class ConversationService:
             turn = self._prepare_turn(request, conversation_id)
 
             try:
-                result = await self._get_runtime().ainvoke(
+                output = await self._get_runtime().ainvoke(
                     turn.model_messages,
                     config=self._runtime_config(conversation_id, request.buyer_id),
                 )
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
 
-            return self._save_completed_turn(turn, result)
+            if isinstance(output, RuntimePause):
+                return self._save_pending_turn(turn, output, self._id_factory())
+            return self._save_completed_turn(turn, output)
 
     async def stream_message(
         self,
@@ -185,6 +215,21 @@ class ConversationService:
                     config=self._runtime_config(conversation_id, request.buyer_id),
                 )
                 async for runtime_event in runtime_events:
+                    if runtime_event.type == "confirmation_required":
+                        pause = runtime_event.pause
+                        if pause is None:
+                            raise RuntimeErrorBase("确认事件缺少暂停状态")
+                        response = self._save_pending_turn(
+                            turn,
+                            pause,
+                            assistant_message_id,
+                        )
+                        yield ConversationStreamEvent(
+                            name="confirmation_required",
+                            data=response,
+                        )
+                        continue
+
                     if runtime_event.type == "complete":
                         result = runtime_event.result
                         if result is None:
@@ -205,6 +250,67 @@ class ConversationService:
                         yield stream_event
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
+
+    async def resume_confirmation(
+        self,
+        conversation_id: UUID,
+        buyer_id: BuyerId,
+        request: ResumeConfirmationRequest,
+    ) -> ChatResponse:
+        """验证会话归属，并从持久化中断点继续生成最终回复。"""
+
+        lock = self._conversation_locks.setdefault(conversation_id, asyncio.Lock())
+        async with lock:
+            conversation = self.get_conversation(conversation_id, buyer_id)
+            if conversation.mode is not ConversationMode.AWAITING_CONFIRMATION:
+                raise ConversationUnavailableError("当前会话没有等待确认的工作流")
+            if not conversation.messages:
+                raise AssistantReplyError("等待确认的会话缺少用户消息")
+
+            user_message = conversation.messages[-1]
+            if user_message.role is not MessageRole.USER:
+                raise AssistantReplyError("等待确认的会话状态不完整")
+
+            if request.action == "confirm":
+                draft = request.draft
+                if draft is None or not self._confirmation_checker(buyer_id, draft):
+                    raise ConversationUnavailableError(
+                        "未找到与确认内容一致的已提交售后申请"
+                    )
+
+            try:
+                result = await self._get_runtime().aresume(
+                    request.model_dump(mode="json"),
+                    config=self._runtime_config(conversation_id, buyer_id),
+                )
+            except (ModelClientError, RuntimeErrorBase) as exc:
+                raise AssistantReplyError("AI 客服暂时无法恢复确认流程") from exc
+
+            return self._save_resumed_turn(conversation, user_message, result)
+
+    @staticmethod
+    def _has_submitted_after_sale(
+        buyer_id: BuyerId,
+        draft: AfterSaleConfirmationDraft,
+    ) -> bool:
+        """确认业务数据库中已经存在与最终草稿一致的待审申请。"""
+
+        from app.ai.tools.after_sales import get_after_sale_tool_service
+        from app.modules.after_sales.schemas import AfterSaleStatus
+
+        service = get_after_sale_tool_service()
+        requests = service.list_for_buyer(buyer_id)
+        for request in requests:
+            if request.status is not AfterSaleStatus.PENDING:
+                continue
+            if request.order_id != draft.order_id:
+                continue
+            if request.request_type.value != draft.request_type:
+                continue
+            if request.reason != draft.reason:
+                continue
+            return True
+        return False
 
     def _prepare_turn(
         self,
@@ -298,6 +404,100 @@ class ConversationService:
                 agent_plan=result.agent_plan,
                 task_results=list(result.task_results),
             ),
+        )
+
+    def _save_pending_turn(
+        self,
+        turn: PreparedTurn,
+        pause: RuntimePause,
+        assistant_message_id: UUID,
+    ) -> ChatConfirmationRequired:
+        """保存已经触发中断的用户消息，并将会话标记为等待确认。"""
+
+        conversation = turn.conversation
+        updated = Conversation(
+            id=conversation.id,
+            buyer_id=conversation.buyer_id,
+            title=conversation.title,
+            mode=ConversationMode.AWAITING_CONFIRMATION,
+            messages=[*conversation.messages, turn.user_message],
+            created_at=conversation.created_at,
+            updated_at=turn.user_message.created_at,
+        )
+        if turn.existing is None:
+            self.repository.add(updated)
+        else:
+            self.repository.update(updated)
+
+        return ChatConfirmationRequired(
+            conversation_id=updated.id,
+            mode=ConversationMode.AWAITING_CONFIRMATION,
+            user_message=turn.user_message,
+            assistant_message_id=assistant_message_id,
+            confirmation=pause.confirmation,
+            run=self._pause_stats(pause),
+        )
+
+    def _save_resumed_turn(
+        self,
+        conversation: Conversation,
+        user_message: ConversationMessage,
+        result: RuntimeResult,
+    ) -> ChatResponse:
+        """恢复完成后只追加AI消息，避免重复保存已经落库的用户消息。"""
+
+        reply_text = result.reply.text.strip()
+        if not reply_text:
+            raise AssistantReplyError("AI 客服没有返回有效的文本回复")
+
+        assistant_message = ConversationMessage(
+            id=self._id_factory(),
+            role=MessageRole.ASSISTANT,
+            content=reply_text,
+            created_at=max(self._clock(), user_message.created_at),
+        )
+        updated = conversation.model_copy(
+            update={
+                "mode": ConversationMode.AI,
+                "messages": [*conversation.messages, assistant_message],
+                "updated_at": assistant_message.created_at,
+            }
+        )
+        self.repository.update(updated)
+
+        turn = PreparedTurn(
+            existing=conversation,
+            conversation=conversation,
+            user_message=user_message,
+            model_messages=[],
+        )
+        self._save_agent_run(updated, turn, result, reply_text)
+        return ChatResponse(
+            conversation_id=updated.id,
+            mode=updated.mode,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            run=ChatRunStats(
+                model_calls=result.model_calls,
+                tool_rounds=result.tool_rounds,
+                tool_calls=result.tool_calls,
+                query_analysis=result.query_analysis,
+                agent_plan=result.agent_plan,
+                task_results=list(result.task_results),
+            ),
+        )
+
+    @staticmethod
+    def _pause_stats(pause: RuntimePause) -> ChatRunStats:
+        """把运行时暂停信息转换成稳定的接口统计格式。"""
+
+        return ChatRunStats(
+            model_calls=pause.model_calls,
+            tool_rounds=pause.tool_rounds,
+            tool_calls=pause.tool_calls,
+            query_analysis=pause.query_analysis,
+            agent_plan=pause.agent_plan,
+            task_results=list(pause.task_results),
         )
 
     def _save_agent_run(

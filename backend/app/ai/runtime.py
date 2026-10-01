@@ -66,6 +66,19 @@ class RuntimeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimePause:
+    """工作流暂停并等待外部确认时返回的数据。"""
+
+    confirmation: dict[str, Any]
+    model_calls: int
+    tool_rounds: int
+    tool_calls: int
+    query_analysis: QueryAnalysis | None = None
+    agent_plan: AgentPlan | None = None
+    task_results: tuple[AgentTaskResult, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeStreamEvent:
     """客服运行过程中发送给上层的单个流式事件。"""
 
@@ -82,6 +95,7 @@ class RuntimeStreamEvent:
         "delta",
         "tool_start",
         "tool_end",
+        "confirmation_required",
         "complete",
     ]
     text: str = ""
@@ -94,6 +108,7 @@ class RuntimeStreamEvent:
     tool_names: tuple[str, ...] = ()
     tool_results: tuple[dict[str, Any], ...] = ()
     result: RuntimeResult | None = None
+    pause: RuntimePause | None = None
 
 
 StreamEventCallback = Callable[[RuntimeStreamEvent], Awaitable[None]]

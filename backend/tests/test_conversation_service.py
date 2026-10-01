@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.ai.model_client import ModelInvocationError
-from app.ai.runtime import RuntimeResult, RuntimeStreamEvent
+from app.ai.runtime import RuntimePause, RuntimeResult, RuntimeStreamEvent
 from app.modules.conversations.repository import ConversationRepository
 from app.modules.conversations.schemas import (
     ChatRequest,
@@ -19,6 +19,7 @@ from app.modules.conversations.schemas import (
     ConversationMessage,
     ConversationMode,
     MessageRole,
+    ResumeConfirmationRequest,
 )
 from app.modules.conversations.service import (
     AssistantReplyError,
@@ -119,6 +120,54 @@ class FailingStreamRuntime:
         yield RuntimeStreamEvent(type="delta", text="未完成")
         raise ModelInvocationError("模型不可用")
 
+
+class PausingRuntime:
+    """先暂停，再根据买家决定返回最终回复。"""
+
+    def __init__(self) -> None:
+        self.resume_calls: list[dict[str, object]] = []
+        self.pause = RuntimePause(
+            confirmation={
+                "type": "after_sale_draft",
+                "requires_confirmation": True,
+                "draft": {"order_id": "10002"},
+            },
+            model_calls=1,
+            tool_rounds=1,
+            tool_calls=1,
+        )
+
+    async def ainvoke(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> RuntimePause:
+        del messages, config
+        return self.pause
+
+    async def astream(
+        self,
+        messages: Sequence[BaseMessage],
+        config: dict[str, object] | None = None,
+    ) -> AsyncIterator[RuntimeStreamEvent]:
+        del messages, config
+        yield RuntimeStreamEvent(type="confirmation_required", pause=self.pause)
+
+    async def aresume(
+        self,
+        decision: dict[str, object],
+        config: dict[str, object],
+    ) -> RuntimeResult:
+        del config
+        self.resume_calls.append(decision)
+        reply = AIMessage(content=f"恢复结果：{decision['action']}")
+        return RuntimeResult(
+            reply=reply,
+            messages=(reply,),
+            model_calls=2,
+            tool_rounds=1,
+            tool_calls=1,
+        )
 
 def id_factory(values: Sequence[UUID]) -> Callable[[], UUID]:
     """按顺序生成测试指定的 UUID。"""
@@ -365,6 +414,85 @@ def test_stream_failure_does_not_save_partial_messages() -> None:
         asyncio.run(collect_events())
 
     assert repository.count() == 0
+
+
+def test_confirmation_pause_is_saved_and_can_be_resumed() -> None:
+    conversation_id, user_id, placeholder_id, assistant_id = (uuid4(), uuid4(), uuid4(), uuid4())
+    repository = ConversationRepository()
+    runtime = PausingRuntime()
+    service = ConversationService(
+        repository=repository,
+        runtime=runtime,
+        id_factory=id_factory([conversation_id, user_id, placeholder_id, assistant_id]),
+        clock=StepClock(),
+        confirmation_checker=lambda _buyer, _draft: True,
+    )
+
+    async def run_flow() -> tuple[list[ConversationStreamEvent], object]:
+        events: list[ConversationStreamEvent] = []
+        stream = service.stream_message(ChatRequest(buyer_id="A", message="订单10002无法开机，我要退货"))
+        async for event in stream:
+            events.append(event)
+        decision = ResumeConfirmationRequest(
+            action="confirm",
+            draft={"order_id": "10002", "request_type": "退货", "reason": "商品无法正常开机"},
+        )
+        with pytest.raises(ConversationAccessError):
+            await service.resume_confirmation(conversation_id, "B", decision)
+        response = await service.resume_confirmation(conversation_id, "A", decision)
+        return events, response
+
+    events, response = asyncio.run(run_flow())
+    assert [event.name for event in events] == ["start", "confirmation_required"]
+    assert response.assistant_message.content == "恢复结果：confirm"
+    assert runtime.resume_calls == [{
+        "action": "confirm",
+        "draft": {"order_id": "10002", "request_type": "退货", "reason": "商品无法正常开机"},
+    }]
+    saved = repository.get(conversation_id)
+    assert saved is not None
+    assert saved.mode is ConversationMode.AI
+    assert [message.role for message in saved.messages] == [MessageRole.USER, MessageRole.ASSISTANT]
+
+    with pytest.raises(ConversationUnavailableError):
+        asyncio.run(service.resume_confirmation(
+            conversation_id,
+            "A",
+            ResumeConfirmationRequest(
+                action="confirm",
+                draft={"order_id": "10002", "request_type": "退货", "reason": "商品无法正常开机"},
+            ),
+        ))
+
+
+def test_only_one_concurrent_confirmation_resume_succeeds() -> None:
+    conversation_id, user_id, placeholder_id, assistant_id = (uuid4(), uuid4(), uuid4(), uuid4())
+    repository = ConversationRepository()
+    runtime = PausingRuntime()
+    service = ConversationService(
+        repository=repository,
+        runtime=runtime,
+        id_factory=id_factory([conversation_id, user_id, placeholder_id, assistant_id]),
+        clock=StepClock(),
+        confirmation_checker=lambda _buyer, _draft: True,
+    )
+    decision = ResumeConfirmationRequest(
+        action="confirm",
+        draft={"order_id": "10002", "request_type": "退货", "reason": "商品无法正常开机"},
+    )
+
+    async def run_concurrently() -> list[object]:
+        await service.send_message(ChatRequest(buyer_id="A", message="订单10002无法开机，我要退货"))
+        first = service.resume_confirmation(conversation_id, "A", decision)
+        second = service.resume_confirmation(conversation_id, "A", decision)
+        return await asyncio.gather(first, second, return_exceptions=True)
+
+    results = asyncio.run(run_concurrently())
+    successful = [item for item in results if not isinstance(item, Exception)]
+    conflicts = [item for item in results if isinstance(item, ConversationUnavailableError)]
+    assert len(successful) == 1
+    assert len(conflicts) == 1
+    assert len(runtime.resume_calls) == 1
 
 
 def test_service_lists_and_reads_only_owned_conversations() -> None:
