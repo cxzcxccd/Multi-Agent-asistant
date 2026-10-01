@@ -305,7 +305,18 @@ export interface ChatResponse {
     tool_rounds: number;
     tool_calls: number;
     query_analysis: QueryAnalysis | null;
+    agent_plan: AgentPlan | null;
   };
+}
+
+export type AgentName =
+  'product_agent' | 'order_agent' | 'after_sales_agent' | 'knowledge_agent' | 'general_agent';
+
+export interface AgentPlan {
+  agents: AgentName[];
+  primary_agent: AgentName;
+  reason: string;
+  allowed_tools: string[];
 }
 
 export type IntentName =
@@ -348,12 +359,14 @@ export interface ChatStreamStart {
 }
 
 export interface ChatStreamStatus {
-  phase: 'router' | 'model' | 'tool';
+  phase: 'router' | 'supervisor' | 'agent' | 'model' | 'tool';
   state: 'started' | 'completed';
   query_analysis?: QueryAnalysis | null;
   tool_calls: number;
   tool_names?: string[];
   tool_results?: Array<{ name: string; output: unknown }>;
+  agent_name?: AgentName | null;
+  agent_plan?: AgentPlan | null;
 }
 
 export interface ChatStreamCallbacks {

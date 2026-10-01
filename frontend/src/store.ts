@@ -1063,6 +1063,61 @@ async function sendBackendReply(input: BackendReplyInput) {
           return;
         }
 
+        if (data.phase === 'supervisor' && data.state === 'started') {
+          run.events.push({
+            id: uid(),
+            type: 'Agent',
+            name: 'supervisor',
+            label: 'Supervisor',
+            status: 'running',
+            output: '正在分配领域 Agent',
+            description: '根据主意图和次要意图生成最小 Agent 调度计划。',
+          });
+          return;
+        }
+
+        if (data.phase === 'supervisor' && data.state === 'completed') {
+          const supervisorEvent = run.events.find(
+            (event) => event.name === 'supervisor' && event.status === 'running',
+          );
+          const plan = data.agent_plan;
+          if (supervisorEvent && plan) {
+            Object.assign(supervisorEvent, {
+              status: 'success',
+              output: plan.agents.join('、'),
+              description: plan.reason,
+              result: plan.allowed_tools.length
+                ? `工具白名单：${plan.allowed_tools.join('、')}`
+                : '本轮不开放业务工具',
+            });
+          }
+          return;
+        }
+
+        if (data.phase === 'agent' && data.state === 'started' && data.agent_name) {
+          run.events.push({
+            id: uid(),
+            type: 'Agent',
+            name: data.agent_name,
+            label: data.agent_name,
+            status: 'running',
+            output: `${data.agent_name} 正在处理`,
+            description: data.agent_plan?.reason || '领域 Agent 正在处理当前任务。',
+          });
+          return;
+        }
+
+        if (data.phase === 'agent' && data.state === 'completed' && data.agent_name) {
+          const agentEvent = run.events.find(
+            (event) => event.name === data.agent_name && event.status === 'running',
+          );
+          if (agentEvent) {
+            agentEvent.status = 'success';
+            agentEvent.output = `${data.agent_name} 已完成`;
+          }
+          return;
+        }
+
         if (data.phase === 'model' && data.state === 'started') {
           const message = target.messages.find((item) => item.id === streamingMessageId);
           if (message) {

@@ -102,6 +102,7 @@ def test_runtime_compiles_a_langgraph_with_model_and_tool_nodes() -> None:
     graph = runtime.graph.get_graph()
 
     assert {"preprocess", "model", "tools"}.issubset(graph.nodes)
+    assert "supervisor" in graph.nodes
     assert "preprocess" in graph.draw_mermaid()
     assert "model" in graph.draw_mermaid()
     assert "tools" in graph.draw_mermaid()
@@ -194,9 +195,13 @@ def test_runtime_streams_direct_model_reply() -> None:
     assert [event.type for event in events] == [
         "router_start",
         "router_end",
+        "supervisor_start",
+        "supervisor_end",
+        "agent_start",
         "model_start",
         "delta",
         "delta",
+        "agent_end",
         "complete",
     ]
     assert delta_text == "你好，我是智能客服。"
@@ -227,12 +232,16 @@ def test_runtime_streams_tool_progress_before_final_reply() -> None:
     assert event_types == [
         "router_start",
         "router_end",
+        "supervisor_start",
+        "supervisor_end",
+        "agent_start",
         "model_start",
         "tool_start",
         "tool_end",
         "model_start",
         "delta",
         "delta",
+        "agent_end",
         "complete",
     ]
     tool_events = [event for event in events if event.type.startswith("tool_")]
@@ -313,7 +322,7 @@ def test_runtime_returns_safe_tool_error_to_model() -> None:
     )
     runtime = CustomerServiceRuntime(model_client)
 
-    result = runtime.invoke([HumanMessage(content="查一下不存在的分类")])
+    result = runtime.invoke([HumanMessage(content="\u63a8\u8350\u4e00\u6b3e\u8033\u673a")])
 
     tool_message = next(
         message for message in result.messages if isinstance(message, ToolMessage)
@@ -334,7 +343,7 @@ def test_runtime_stops_repeated_tool_requests_at_configured_limit() -> None:
     runtime = CustomerServiceRuntime(model_client, max_tool_rounds=1)
 
     with pytest.raises(RuntimeLoopLimitError, match="超过 1 轮"):
-        runtime.invoke([HumanMessage(content="一直查询")])
+        runtime.invoke([HumanMessage(content="\u7ee7\u7eed\u63a8\u8350\u8033\u673a")])
 
 
 def test_runtime_rejects_invalid_tool_call_arguments() -> None:

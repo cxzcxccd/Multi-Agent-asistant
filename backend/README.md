@@ -20,7 +20,8 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 - 基于本地中文 FastEmbed 模型的 Query 语义路由，包含文本规范化、多轮上下文补全、意图识别、实体提取和业务 Query 整理。
 - 索引重建仅为新增或内容变化的片段生成向量；未变化片段直接复用已有向量。
 - OpenAI 与 OpenAI 兼容接口的模型客户端。
-- LangGraph `preprocess → model → tools` 客服运行图、工具执行、错误隔离和循环次数限制。
+- LangGraph `preprocess → supervisor → domain agent → tools` 多 Agent 客服运行图；Supervisor 根据主次意图选择商品、订单、售后、知识库或通用 Agent。
+- 各领域 Agent 只绑定自己的最小工具集，执行前再次校验工具白名单；复合问题会合并所需 Agent 的工具权限。
 - 面向数码商品售前咨询的中文系统提示词。
 - 会话、消息、聊天请求、聊天响应和运行统计的数据格式。
 - 数据库会话仓库和会话服务，可在服务重启后恢复会话并继续调用 LangGraph 客服运行时。
@@ -51,6 +52,8 @@ AI 商品咨询调用链：
 用户消息
   → CustomerServiceRuntime
   → LangGraph preprocess 节点规范化 Query 并识别意图
+  → Supervisor 选择商品 Agent
+  → 商品 Agent 仅绑定 search_products 与 get_product
   → LangGraph model 节点
   → ModelClient 调用聊天模型
   → 模型请求业务工具时进入 tools 节点
@@ -73,9 +76,9 @@ AI 商品咨询调用链：
 LangGraph 当前结构：
 
 ```text
-START → preprocess → model ──无工具调用──→ END
-                         │
-                         └──有工具调用──→ tools ──→ model
+START → preprocess → supervisor → domain agent/model ──无工具调用──→ END
+                                             │
+                                             └──有工具调用──→ tools ──→ model
 ```
 
 订单查询调用链：
@@ -139,9 +142,14 @@ backend/
 │  │  │  规范化 Query，在需要时补充最近一轮上下文，使用本地中文 Embedding 匹配意图路由，
 │  │  │  提取订单号、预算、商品类别和售后类型，并生成供模型参考的业务 Query。
 │  │  ├─ runtime.py
-│  │  │  使用 LangGraph 构建 preprocess、model 与 tools 节点；保存路由结果、消息和调用统计，根据 tool_calls
+│  │  │  使用 LangGraph 构建 preprocess、supervisor、model 与 tools 节点；保存调度计划、消息和调用统计，根据 tool_calls
 │  │  │  决定继续查询或结束；异步流式运行时转发模型片段与工具进度，并限制连续
 │  │  │  工具轮数、隔离工具错误和校验对话输入。
+│  │  ├─ multi_agent/
+│  │  │  ├─ schemas.py
+│  │  │  │  定义领域 Agent 名称和可序列化的 AgentPlan 调度计划。
+│  │  │  └─ supervisor.py
+│  │  │     将语义意图映射到领域 Agent，生成工具白名单，并支持复合意图的最小权限合并。
 │  │  ├─ prompts/
 │  │  │  └─ customer_service.md
 │  │  │     客服系统提示词，要求商品事实来自工具、信息不足时追问，并禁止编造。
@@ -465,7 +473,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 165 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 175 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -476,4 +484,4 @@ uv run --no-cache pytest -q
 2. 为 SSE 增加刷新后的自动重连、断线恢复游标和生产环境代理配置。
 3. 增加登录限流、认证审计和签名密钥轮换机制。
 
-Milvus 混合检索形成评测基线后，再按产品设计接入 MCP 和 Multi-Agent。
+Supervisor 多 Agent 第一版已完成。下一步可增加任务依赖图、并行执行、用户确认节点和 Agent 运行记录持久化；MCP 尚未接入。

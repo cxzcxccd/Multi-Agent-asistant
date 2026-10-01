@@ -282,6 +282,7 @@ class ConversationService:
                 tool_rounds=result.tool_rounds,
                 tool_calls=result.tool_calls,
                 query_analysis=result.query_analysis,
+                agent_plan=result.agent_plan,
             ),
         )
 
@@ -462,6 +463,30 @@ class ConversationService:
                 phase="router",
                 state="completed",
                 query_analysis=event.query_analysis,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type == "supervisor_start":
+            status_data = ChatStreamStatus(
+                phase="supervisor",
+                state="started",
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type == "supervisor_end" and event.agent_plan is not None:
+            status_data = ChatStreamStatus(
+                phase="supervisor",
+                state="completed",
+                agent_plan=event.agent_plan,
+            )
+            return ConversationStreamEvent(name="status", data=status_data)
+
+        if event.type in {"agent_start", "agent_end"} and event.agent_name:
+            status_data = ChatStreamStatus(
+                phase="agent",
+                state="started" if event.type == "agent_start" else "completed",
+                agent_name=event.agent_name,
+                agent_plan=event.agent_plan,
             )
             return ConversationStreamEvent(name="status", data=status_data)
 

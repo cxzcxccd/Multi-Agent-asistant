@@ -25,6 +25,8 @@ from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.ai.model_client import ModelClient, create_model_client
+from app.ai.multi_agent.schemas import AgentPlan
+from app.ai.multi_agent.supervisor import Supervisor, format_agent_context, tools_for_plan
 from app.ai.query_preprocessor import (
     QueryAnalysis,
     QueryPreprocessor,
@@ -43,6 +45,7 @@ class CustomerServiceState(TypedDict):
 
     messages: Annotated[list[AnyMessage], add_messages]
     query_analysis: QueryAnalysis | None
+    agent_plan: AgentPlan | None
     model_calls: int
     tool_rounds: int
     tool_calls: int
@@ -58,6 +61,7 @@ class RuntimeResult:
     tool_rounds: int
     tool_calls: int
     query_analysis: QueryAnalysis | None = None
+    agent_plan: AgentPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,10 @@ class RuntimeStreamEvent:
     type: Literal[
         "router_start",
         "router_end",
+        "supervisor_start",
+        "supervisor_end",
+        "agent_start",
+        "agent_end",
         "model_start",
         "delta",
         "tool_start",
@@ -75,6 +83,8 @@ class RuntimeStreamEvent:
     ]
     text: str = ""
     query_analysis: QueryAnalysis | None = None
+    agent_plan: AgentPlan | None = None
+    agent_name: str = ""
     tool_calls: int = 0
     tool_names: tuple[str, ...] = ()
     tool_results: tuple[dict[str, Any], ...] = ()
@@ -99,6 +109,10 @@ class RuntimeInputError(RuntimeErrorBase):
 
 class InvalidToolCallError(RuntimeErrorBase):
     """模型生成了无法解析的工具调用。"""
+
+
+class AgentPermissionError(RuntimeErrorBase):
+    """领域 Agent 请求了当前调度计划未授权的工具。"""
 
 
 class RuntimeLoopLimitError(RuntimeErrorBase):
@@ -128,6 +142,7 @@ class CustomerServiceRuntime:
         query_preprocessor: QueryPreprocessor | None = None,
         system_prompt: str | None = None,
         max_tool_rounds: int = 4,
+        supervisor: Supervisor | None = None,
     ) -> None:
         if max_tool_rounds < 1:
             raise RuntimeConfigurationError("max_tool_rounds 必须大于或等于 1")
@@ -137,6 +152,8 @@ class CustomerServiceRuntime:
             raise RuntimeConfigurationError("客服系统提示词不能为空")
 
         self._model_client = model_client
+        self._supervisor = supervisor or Supervisor()
+        self._agent_clients: dict[tuple[str, ...], ModelClient] = {}
         self._query_preprocessor = (
             query_preprocessor or create_fallback_query_preprocessor()
         )
@@ -239,7 +256,7 @@ class CustomerServiceRuntime:
                 await graph_task
 
     def _build_graph(self) -> Any:
-        """创建“Query 预处理—模型—工具—模型”的状态图。"""
+        """创建“预处理—Supervisor—领域 Agent—工具”的状态图。"""
 
         builder = StateGraph(CustomerServiceState)
         builder.add_node(
@@ -251,11 +268,16 @@ class CustomerServiceRuntime:
             RunnableLambda(self._call_model, afunc=self._acall_model),
         )
         builder.add_node(
+            "supervisor",
+            RunnableLambda(self._supervise, afunc=self._asupervise),
+        )
+        builder.add_node(
             "tools",
             RunnableLambda(self._call_tools, afunc=self._acall_tools),
         )
         builder.add_edge(START, "preprocess")
-        builder.add_edge("preprocess", "model")
+        builder.add_edge("preprocess", "supervisor")
+        builder.add_edge("supervisor", "model")
         builder.add_conditional_edges(
             "model",
             self._route_after_model,
@@ -274,6 +296,37 @@ class CustomerServiceRuntime:
         del config
         analysis = self._query_preprocessor.analyze(state["messages"])
         return {"query_analysis": analysis}
+
+    def _supervise(
+        self,
+        state: CustomerServiceState,
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """根据结构化意图生成确定性的领域 Agent 调度计划。"""
+
+        del config
+        analysis = self._require_query_analysis(state)
+        return {"agent_plan": self._supervisor.plan(analysis)}
+
+    async def _asupervise(
+        self,
+        state: CustomerServiceState,
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """生成调度计划，并通过 SSE 展示 Supervisor 的选择。"""
+
+        callback = self._get_stream_callback(config)
+        if callback is not None:
+            await callback(RuntimeStreamEvent(type="supervisor_start"))
+
+        analysis = self._require_query_analysis(state)
+        plan = self._supervisor.plan(analysis)
+
+        if callback is not None and state.get("model_calls", 0) == 0:
+            await callback(
+                RuntimeStreamEvent(type="supervisor_end", agent_plan=plan)
+            )
+        return {"agent_plan": plan}
 
     async def _apreprocess_query(
         self,
@@ -308,8 +361,10 @@ class CustomerServiceRuntime:
         """同步执行模型节点。"""
 
         messages = self._messages_for_model(state)
-        response = self._model_client.invoke(messages, config=config)
+        model_client = self._model_client_for_state(state)
+        response = model_client.invoke(messages, config=config)
         self._validate_model_response(response)
+        self._validate_agent_tool_permissions(state, response)
         return {
             "messages": [response],
             "model_calls": state.get("model_calls", 0) + 1,
@@ -324,19 +379,40 @@ class CustomerServiceRuntime:
 
         messages = self._messages_for_model(state)
         callback = self._get_stream_callback(config)
+        model_client = self._model_client_for_state(state)
+        plan = self._require_agent_plan(state)
+
+        if callback is not None and state.get("model_calls", 0) == 0:
+            await callback(
+                RuntimeStreamEvent(
+                    type="agent_start",
+                    agent_name=plan.primary_agent.value,
+                    agent_plan=plan,
+                )
+            )
 
         if callback is None:
-            response = await self._model_client.ainvoke(
+            response = await model_client.ainvoke(
                 messages,
                 config=config,
             )
         else:
             response = await self._stream_model_response(
+                model_client,
                 messages,
                 config,
                 callback,
             )
         self._validate_model_response(response)
+        self._validate_agent_tool_permissions(state, response)
+        if callback is not None and not response.tool_calls:
+            await callback(
+                RuntimeStreamEvent(
+                    type="agent_end",
+                    agent_name=plan.primary_agent.value,
+                    agent_plan=plan,
+                )
+            )
         return {
             "messages": [response],
             "model_calls": state.get("model_calls", 0) + 1,
@@ -401,6 +477,7 @@ class CustomerServiceRuntime:
 
     async def _stream_model_response(
         self,
+        model_client: ModelClient,
         messages: Sequence[BaseMessage],
         config: RunnableConfig,
         callback: StreamEventCallback,
@@ -410,7 +487,7 @@ class CustomerServiceRuntime:
         await callback(RuntimeStreamEvent(type="model_start"))
         combined_chunk: AIMessageChunk | None = None
 
-        async for chunk in self._model_client.astream(messages, config=config):
+        async for chunk in model_client.astream(messages, config=config):
             if combined_chunk is None:
                 combined_chunk = chunk
             else:
@@ -466,9 +543,12 @@ class CustomerServiceRuntime:
             break
 
         route_context = self._format_route_context(analysis)
+        plan = self._require_agent_plan(state)
+        agent_context = format_agent_context(plan)
         return [
             SystemMessage(content=self._system_prompt),
             SystemMessage(content=route_context),
+            SystemMessage(content=agent_context),
             *conversation_messages,
         ]
 
@@ -505,6 +585,54 @@ class CustomerServiceRuntime:
 
         if response.invalid_tool_calls:
             raise InvalidToolCallError("模型生成了无法解析的工具调用参数")
+
+    def _validate_agent_tool_permissions(
+        self,
+        state: CustomerServiceState,
+        response: AIMessage,
+    ) -> None:
+        """在执行工具前再次校验工具白名单。"""
+
+        plan = self._require_agent_plan(state)
+        allowed_tools = set(plan.allowed_tools)
+        for tool_call in response.tool_calls:
+            tool_name = str(tool_call.get("name", "")).strip()
+            if tool_name not in allowed_tools:
+                raise AgentPermissionError(
+                    f"{plan.primary_agent.value} 无权调用工具：{tool_name or 'unknown'}"
+                )
+
+    def _model_client_for_state(self, state: CustomerServiceState) -> ModelClient:
+        """为生产模型绑定计划内最小工具集；测试客户端保持可注入。"""
+
+        plan = self._require_agent_plan(state)
+        raw_model = getattr(self._model_client, "model", None)
+        if raw_model is None:
+            return self._model_client
+
+        cache_key = tuple(sorted(plan.allowed_tools))
+        cached_client = self._agent_clients.get(cache_key)
+        if cached_client is not None:
+            return cached_client
+
+        selected_tools = tools_for_plan(plan)
+        client = ModelClient(model=raw_model, tools=selected_tools)
+        self._agent_clients[cache_key] = client
+        return client
+
+    @staticmethod
+    def _require_query_analysis(state: CustomerServiceState) -> QueryAnalysis:
+        analysis = state.get("query_analysis")
+        if analysis is None:
+            raise RuntimeErrorBase("Query 预处理节点没有返回分析结果")
+        return analysis
+
+    @staticmethod
+    def _require_agent_plan(state: CustomerServiceState) -> AgentPlan:
+        plan = state.get("agent_plan")
+        if plan is None:
+            raise RuntimeErrorBase("Supervisor 没有返回 Agent 调度计划")
+        return plan
 
     @staticmethod
     def _count_requested_tools(message: AnyMessage) -> int:
@@ -566,7 +694,7 @@ class CustomerServiceRuntime:
 
         return (
             '{"success":false,"error":{"code":"TOOL_EXECUTION_ERROR",'
-            '"message":"商品工具执行失败，请检查参数后重试"}}'
+            '"message":"业务工具执行失败，请检查参数后重试"}}'
         )
 
     @staticmethod
@@ -576,6 +704,7 @@ class CustomerServiceRuntime:
         return {
             "messages": list(messages),
             "query_analysis": None,
+            "agent_plan": None,
             "model_calls": 0,
             "tool_rounds": 0,
             "tool_calls": 0,
@@ -634,6 +763,7 @@ class CustomerServiceRuntime:
             reply=reply,
             messages=messages,
             query_analysis=query_analysis,
+            agent_plan=state.get("agent_plan"),
             model_calls=state.get("model_calls", 0),
             tool_rounds=state.get("tool_rounds", 0),
             tool_calls=state.get("tool_calls", 0),

@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from app.ai.query_preprocessor import QueryAnalysis
+from app.ai.multi_agent.schemas import AgentName, AgentPlan
 
 BuyerId = Literal["A", "B"]
 MessageContent = Annotated[
@@ -133,6 +134,7 @@ class ChatRunStats(BaseModel):
     tool_rounds: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
     query_analysis: QueryAnalysis | None = None
+    agent_plan: AgentPlan | None = None
 
     @model_validator(mode="after")
     def validate_tool_counts(self) -> Self:
@@ -183,12 +185,14 @@ class ChatStreamStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    phase: Literal["router", "model", "tool"]
+    phase: Literal["router", "supervisor", "agent", "model", "tool"]
     state: Literal["started", "completed"]
     query_analysis: QueryAnalysis | None = None
     tool_calls: int = Field(default=0, ge=0)
     tool_names: list[str] = Field(default_factory=list)
     tool_results: list[dict[str, object]] = Field(default_factory=list)
+    agent_name: AgentName | None = None
+    agent_plan: AgentPlan | None = None
 
 
 class ChatStreamDelta(BaseModel):
