@@ -3883,3 +3883,24 @@ td,
     margin: 0 4px;
   }
 }
+/* 购物偏好由买家显式管理，避免与聊天输入框混淆。 */
+.memory-preferences {
+  padding: 12px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.memory-preferences label {
+  display: block;
+  margin-bottom: 8px;
+}
+.memory-preferences textarea {
+  display: block;
+  width: 100%;
+  min-height: 70px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+}
+.memory-preferences button {
+  margin-right: 8px;
+}

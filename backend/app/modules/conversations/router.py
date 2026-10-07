@@ -7,6 +7,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from app.modules.conversations.memory import MemoryService
 
 from app.api.stream import encode_sse
 from app.modules.auth.dependencies import BuyerPrincipal, SsePrincipal, StaffPrincipal
@@ -60,6 +62,7 @@ async def get_conversation_service(request: Request) -> ConversationService:
         service = ConversationService(
             repository=repository,
             agent_run_repository=agent_run_repository,
+            memory_service=MemoryService(get_session_factory(), repository.list_by_buyer),
             runtime_factory=lambda: create_customer_service_runtime(
                 checkpointer=checkpointer
             ),
@@ -73,6 +76,34 @@ ConversationServiceDependency = Annotated[
     Depends(get_conversation_service),
 ]
 BuyerQuery = Annotated[BuyerId, Query(description="当前买家编号")]
+
+
+class MemoryPreferences(BaseModel):
+    """显式设置长期偏好；不允许前端指定其他买家身份。"""
+
+    content: str = Field(default="", max_length=500)
+
+
+@router.get("/memory/preferences", response_model=MemoryPreferences)
+async def get_memory_preferences(user: BuyerPrincipal) -> MemoryPreferences:
+    initialize_database()
+    memory = MemoryService(get_session_factory(), lambda _buyer: [])
+    return MemoryPreferences(content=memory.preferences(user.buyer_id))
+
+
+@router.put("/memory/preferences", response_model=MemoryPreferences)
+async def set_memory_preferences(data: MemoryPreferences, user: BuyerPrincipal) -> MemoryPreferences:
+    initialize_database()
+    memory = MemoryService(get_session_factory(), lambda _buyer: [])
+    memory.set_preferences(user.buyer_id, data.content)
+    return MemoryPreferences(content=memory.preferences(user.buyer_id))
+
+
+@router.delete("/memory/preferences", status_code=204)
+async def delete_memory_preferences(user: BuyerPrincipal) -> None:
+    initialize_database()
+    memory = MemoryService(get_session_factory(), lambda _buyer: [])
+    memory.set_preferences(user.buyer_id, "")
 
 
 def conversation_error_status(error: ConversationServiceError) -> int:

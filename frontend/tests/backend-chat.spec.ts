@@ -3,6 +3,33 @@ import type { Page, Route } from '@playwright/test';
 
 const conversationId = '11111111-1111-4111-8111-111111111111';
 
+test('买家可以保存、重新读取和删除跨会话购物偏好', async ({ page }) => {
+  let saved = '';
+  await page.route('**/api/memory/preferences', async (route) => {
+    expect(route.request().headers().authorization).toBe('Bearer test-token-buyer_a');
+    if (route.request().method() === 'PUT') {
+      saved = (route.request().postDataJSON() as { content: string }).content;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ content: saved }),
+    });
+  });
+  await login(page);
+  await page.getByRole('button', { name: '购物偏好', exact: true }).click();
+  await expect(page.getByLabel('购物偏好', { exact: true })).toBeEnabled();
+  await page.getByLabel('购物偏好', { exact: true }).fill('喜欢头戴式耳机');
+  await page.getByRole('button', { name: '保存偏好' }).click();
+  await expect(page.getByRole('status')).toContainText('已保存');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '购物偏好', exact: true }).click();
+  await expect(page.getByLabel('购物偏好', { exact: true })).toHaveValue('喜欢头戴式耳机');
+  await page.getByRole('button', { name: '删除偏好' }).click();
+  await expect(page.getByRole('status')).toContainText('已删除');
+  await expect(page.getByLabel('购物偏好', { exact: true })).toHaveValue('');
+});
+
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/auth/login', async (route) => {
     const body = route.request().postDataJSON() as { username: string };

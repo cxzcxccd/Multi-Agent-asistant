@@ -7,6 +7,22 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/
 
 type AuthIdentity = { role: 'buyer'; buyerId: BuyerId } | { role: 'staff' };
 
+export async function buyerPreferences(buyerId: BuyerId, content?: string): Promise<string> {
+  const init: RequestInit = { method: 'GET' };
+  if (content !== undefined) {
+    init.method = 'PUT';
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify({ content });
+  }
+  const response = await authenticatedFetch(`${apiBaseUrl}/memory/preferences`, init, {
+    role: 'buyer',
+    buyerId,
+  });
+  if (!response.ok) throw new Error(`偏好操作失败（${response.status}）`);
+  const data = (await response.json()) as { content: string };
+  return data.content;
+}
+
 export interface AuthPrincipal {
   subject: string;
   display_name: string;

@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
@@ -19,6 +19,7 @@ from app.ai.runtime import (
     create_customer_service_runtime,
 )
 from app.modules.conversations.repository import ConversationRepository
+from app.modules.conversations.memory import MemoryService
 from app.modules.conversations.schemas import (
     AfterSaleConfirmationDraft,
     BuyerId,
@@ -149,6 +150,7 @@ class ConversationService:
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] = utc_now,
         agent_run_repository: AgentRunStore | None = None,
+        memory_service: MemoryService | None = None,
         confirmation_checker: Callable[
             [BuyerId, AfterSaleConfirmationDraft], bool
         ]
@@ -160,6 +162,7 @@ class ConversationService:
         self._id_factory = id_factory
         self._clock = clock
         self._agent_run_repository = agent_run_repository
+        self._memory_service = memory_service
         self._confirmation_checker = (
             confirmation_checker or self._has_submitted_after_sale
         )
@@ -176,6 +179,7 @@ class ConversationService:
 
         async with lock:
             turn = self._prepare_turn(request, conversation_id)
+            turn = await self._with_memory(turn, request.message)
 
             try:
                 output = await self._get_runtime().ainvoke(
@@ -200,6 +204,7 @@ class ConversationService:
 
         async with lock:
             turn = self._prepare_turn(request, conversation_id)
+            turn = await self._with_memory(turn, request.message)
             assistant_message_id = self._id_factory()
             start_data = ChatStreamStart(
                 conversation_id=conversation_id,
@@ -346,6 +351,19 @@ class ConversationService:
             user_message=user_message,
             model_messages=model_messages,
         )
+
+    async def _with_memory(self, turn: PreparedTurn, query: str) -> PreparedTurn:
+        """在线程中运行本地向量计算，避免阻塞其他会话的SSE。"""
+
+        if self._memory_service is None:
+            return turn
+        messages = await asyncio.to_thread(
+            self._memory_service.build_context,
+            turn.conversation,
+            query,
+            turn.model_messages,
+        )
+        return replace(turn, model_messages=messages)
 
     def _save_completed_turn(
         self,

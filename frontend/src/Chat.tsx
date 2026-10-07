@@ -35,6 +35,74 @@ import {
   timeLabel,
 } from './components';
 import type { Conversation, Message } from './types';
+import { buyerPreferences } from './api';
+import type { BuyerId } from './types';
+
+function MemoryPreferencesEditor({ buyerId }: { buyerId: BuyerId }) {
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState('');
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setOpen(false);
+    setContent('');
+    setStatus('');
+  }, [buyerId]);
+  async function load() {
+    setOpen(true);
+    setBusy(true);
+    setStatus('');
+    try {
+      setContent(await buyerPreferences(buyerId));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '加载失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function save(value: string) {
+    setBusy(true);
+    try {
+      setContent(await buyerPreferences(buyerId, value));
+      setStatus(value ? '已保存，将用于后续咨询。' : '已删除长期偏好。');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!open)
+    return (
+      <button className="btn btn-small" onClick={() => void load()}>
+        购物偏好
+      </button>
+    );
+  return (
+    <div className="memory-preferences">
+      <label>
+        跨会话购物偏好（请勿填写密码等敏感信息）
+        <textarea
+          aria-label="购物偏好"
+          maxLength={500}
+          value={content}
+          disabled={busy}
+          onChange={(event) => setContent(event.target.value)}
+          placeholder="例如：喜欢头戴式耳机，偏好轻便产品"
+        />
+      </label>
+      <button className="btn btn-small" disabled={busy} onClick={() => void save(content)}>
+        保存偏好
+      </button>
+      <button className="btn btn-small" disabled={busy} onClick={() => void save('')}>
+        删除偏好
+      </button>
+      <button className="btn btn-small" onClick={() => setOpen(false)}>
+        关闭
+      </button>
+      <p role="status">{status}</p>
+    </div>
+  );
+}
 
 export function MessageFeed({
   conversation,
@@ -299,6 +367,7 @@ export default function Chat({ active = true }: { active?: boolean }) {
             <PackageSearch size={21} />
           </button>
         </div>
+        {backendChatEnabled && <MemoryPreferencesEditor key={s.buyer} buyerId={s.buyer} />}
         <MessageFeed conversation={c} active={active} />
         {c.mode === 'awaiting_confirmation' || c.mode === 'waiting' || c.mode === 'human' ? (
           <div className="service-banner">

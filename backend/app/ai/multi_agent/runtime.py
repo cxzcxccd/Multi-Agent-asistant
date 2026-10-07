@@ -15,12 +15,14 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    RemoveMessage,
 )
 from langchain_core.messages.utils import message_chunk_to_message
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph, add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command, interrupt
 
@@ -782,7 +784,9 @@ class MultiAgentRuntime:
     @staticmethod
     def _initial_state(messages: list[BaseMessage]) -> MultiAgentState:
         return {
-            "messages": messages,
+            # 新一轮以会话服务组装的上下文为准，避免检查点把裁剪的历史重新追加。
+            # Command(resume=...) 不经过这里，因此确认恢复仍使用原检查点。
+            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages],
             "query_analysis": None,
             "agent_plan": None,
             "task_results": [],
