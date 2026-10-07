@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     checkpoint_database_path: str = str(DEFAULT_CHECKPOINT_PATH)
     catalog_mcp_enabled: bool = True
+    order_mcp_enabled: bool = True
+    order_mcp_url: str = "http://127.0.0.1:8000/orders-mcp/"
     catalog_mcp_url: str = "http://127.0.0.1:8000/mcp/"
     catalog_mcp_timeout_seconds: float = Field(default=15, gt=0, le=120)
     auth_secret: SecretStr = SecretStr("local-demo-secret-change-before-deploy")

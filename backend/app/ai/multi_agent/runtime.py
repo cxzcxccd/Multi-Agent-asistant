@@ -83,6 +83,7 @@ class MultiAgentRuntime:
         max_tool_rounds: int = 4,
         checkpointer: BaseCheckpointSaver[Any] | None = None,
         catalog_tools: list[BaseTool] | None = None,
+        order_tools: list[BaseTool] | None = None,
     ) -> None:
         self._model_client = model_client
         self._query_preprocessor = query_preprocessor or create_query_preprocessor()
@@ -93,6 +94,7 @@ class MultiAgentRuntime:
         self._max_tool_rounds = max_tool_rounds
         self._checkpointer = checkpointer
         self._catalog_tools = catalog_tools
+        self._order_tools = order_tools
         self._client_cache: dict[AgentName, Any] = {}
         self._graph = self._build_graph()
 
@@ -694,6 +696,12 @@ class MultiAgentRuntime:
         return client
 
     def _tools_for_task(self, task: AgentTask) -> list[BaseTool]:
+        if task.agent_name is AgentName.ORDER and self._order_tools is not None:
+            selected: list[BaseTool] = []
+            for tool in self._order_tools:
+                if tool.name in task.allowed_tools:
+                    selected.append(tool)
+            return selected
         if task.agent_name is AgentName.PRODUCT and self._catalog_tools is not None:
             selected: list[BaseTool] = []
             for tool in self._catalog_tools:
@@ -856,7 +864,7 @@ def create_multi_agent_runtime(
     """使用当前模型和语义路由配置创建生产多 Agent 运行时。"""
 
     from app.core.config import settings
-    from app.mcp.client import CatalogMcpClient
+    from app.mcp.client import CatalogMcpClient, OrderMcpClient
 
     catalog_tools = None
     if settings.catalog_mcp_enabled:
@@ -866,9 +874,18 @@ def create_multi_agent_runtime(
         )
         catalog_tools = client.tools()
 
+    order_tools = None
+    if settings.order_mcp_enabled:
+        order_client = OrderMcpClient(
+            settings.order_mcp_url,
+            settings.catalog_mcp_timeout_seconds,
+        )
+        order_tools = order_client.tools()
+
     return MultiAgentRuntime(
         model_client=create_model_client(),
         query_preprocessor=create_query_preprocessor(),
         checkpointer=checkpointer,
         catalog_tools=catalog_tools,
+        order_tools=order_tools,
     )

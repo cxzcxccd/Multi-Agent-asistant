@@ -1,4 +1,4 @@
-"""把MCP商品调用适配为领域Agent可以执行的LangChain工具。"""
+"""把MCP商品和订单调用适配为领域Agent的LangChain工具。"""
 
 import asyncio
 import json
@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.runnables import RunnableConfig
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -19,11 +20,16 @@ class CatalogMcpClient:
         self.url = url
         self.timeout_seconds = timeout_seconds
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """初始化协议、确认远端工具存在并执行调用。"""
 
         async with asyncio.timeout(self.timeout_seconds):
-            async with httpx.AsyncClient(trust_env=False) as http_client:
+            async with httpx.AsyncClient(trust_env=False, headers=headers) as http_client:
                 async with streamable_http_client(
                     self.url,
                     http_client=http_client,
@@ -42,7 +48,7 @@ class CatalogMcpClient:
         if result is None:
             raise RuntimeError(f"MCP服务没有提供工具：{name}")
         if result.isError:
-            raise RuntimeError("MCP商品工具执行失败")
+            raise RuntimeError("MCP工具执行失败")
         if result.structuredContent is not None:
             return result.structuredContent
         for content in result.content:
@@ -50,7 +56,7 @@ class CatalogMcpClient:
                 output = json.loads(content.text)
                 if isinstance(output, dict):
                     return output
-        raise RuntimeError("MCP商品工具没有返回结构化结果")
+        raise RuntimeError("MCP工具没有返回结构化结果")
 
     def tools(self) -> list[BaseTool]:
         """沿用本地参数模型及名称，使原有白名单和参数校验继续有效。"""
@@ -71,5 +77,36 @@ class CatalogMcpClient:
     def _coroutine_for(self, name: str) -> Any:
         async def invoke(**arguments: Any) -> dict[str, Any]:
             return await self.call(name, arguments)
+
+        return invoke
+
+
+class OrderMcpClient(CatalogMcpClient):
+    """订单工具从RunnableConfig读取身份，每次调用单独签发凭证。"""
+
+    def tools(self) -> list[BaseTool]:
+        from app.ai.tools.orders import get_order_tools
+
+        tools: list[BaseTool] = []
+        for local_tool in get_order_tools():
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=self._order_coroutine(local_tool.name),
+                    name=local_tool.name,
+                    description=local_tool.description,
+                    args_schema=local_tool.args_schema,
+                )
+            )
+        return tools
+
+    def _order_coroutine(self, name: str) -> Any:
+        async def invoke(config: RunnableConfig, **arguments: Any) -> dict[str, Any]:
+            from app.mcp.auth import create_order_token
+
+            configurable = config.get("configurable") or {}
+            buyer_id = configurable.get("buyer_id")
+            token = create_order_token(buyer_id)
+            headers = {"Authorization": f"Bearer {token}"}
+            return await self.call(name, arguments, headers=headers)
 
         return invoke

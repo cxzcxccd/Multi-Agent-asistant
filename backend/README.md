@@ -35,7 +35,7 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 
 当前边界：LangGraph 运行时已经可以完成真实模型与商品、订单、售后及知识检索工具的调用闭环，
 业务数据和知识正文由 SQLite 持久保存，知识向量由 Milvus 持久保存；前端可以实时显示模型文本、检索来源和工具进度。
-LangGraph 状态保存在独立的 `data/checkpoints.db`，不会与业务表混用。售后确认的 `interrupt/resume` HTTP 协议已经接入；商品查询 MCP 已接入，人工接管、回复与状态切换已持久化。
+LangGraph 状态保存在独立的 `data/checkpoints.db`，不会与业务表混用。售后确认的 `interrupt/resume` HTTP 协议已经接入；商品和订单查询 MCP 已接入，人工接管、回复与状态切换已持久化。
 
 ## 当前调用链
 
@@ -490,7 +490,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 183 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 185 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -501,15 +501,15 @@ uv run --no-cache pytest -q
 2. 为 SSE 增加刷新后的自动重连、断线恢复游标和生产环境代理配置。
 3. 增加登录限流、认证审计和签名密钥轮换机制。
 
-任务级 Supervisor、依赖图、并行执行、汇总 Agent、运行记录、Checkpoint 持久化和售后确认恢复已经完成。下一步可增加服务重启后的待确认任务提醒、超时自动取消和跨进程任务队列；下一步迁移订单工具到 MCP，并设计可信身份传递。
+任务级 Supervisor、依赖图、并行执行、汇总 Agent、运行记录、Checkpoint 持久化和售后确认恢复已经完成。下一步可增加服务重启后的待确认任务提醒、超时自动取消和跨进程任务队列；下一步迁移知识检索工具到 MCP。
 
 
 ## 商品 MCP 服务
 
 应用启动时挂载 `/mcp/` Streamable HTTP 服务，并管理其 session manager 生命周期。
 采用官方 Python SDK `mcp>=1.28,<2`，固定主版本以保持 API 兼容。
-目前仅暴露无需买家身份的 `search_products` 与 `get_product`，复用现有商品服务、
-Pydantic 参数模型和结构化错误；订单、售后和知识工具继续使用本地实现。
+商品端点暴露无需买家身份的 `search_products` 与 `get_product`，复用现有商品服务、
+Pydantic 参数模型和结构化错误；订单使用独立受保护端点，售后和知识工具继续使用本地实现。
 
 生产运行时的商品 Agent 默认使用 MCP 客户端适配工具：
 
@@ -534,3 +534,35 @@ CATALOG_MCP_TIMEOUT_SECONDS=15
 
 新增 `tests/test_catalog_mcp.py` 使用真实 MCP SDK 和临时 HTTP 端口验证搜索、详情、
 不存在商品、非法参数和不存在工具，无需真实大模型。
+
+
+## 订单 MCP 与内部身份凭证
+
+`/orders-mcp/` 提供 `list_orders`、`get_order`、`get_logistics`，整个端点均要求
+Bearer 内部凭证，包括协议初始化、发现工具和调用工具请求。
+生产订单 Agent 默认通过 `OrderMcpClient` 调用，沿用订单参数模型及领域白名单。
+
+```text
+会话服务确定 buyer_id → RunnableConfig → OrderMcpClient
+  → 签发一分钟 JWT → /orders-mcp/ 验证凭证
+  → 请求级 ContextVar → 原订单工具 → OrderService 归属校验 → SQLite
+```
+
+这是后端之间的内部认证，不是面向第三方客户端的完整 OAuth 授权服务。
+JWT 的签名密钥从 `AUTH_SECRET` 派生并与浏览器令牌用途隔离，包含固定 issuer、
+audience、orders:read scope、买家 subject、签发和过期时间及唯一 jti。
+不转发浏览器令牌，也不允许模型提供 buyer_id。每次调用独立签发和建立协议会话，
+不在共享客户端保存买家身份；服务端在请求结束时重置 ContextVar。
+
+```dotenv
+ORDER_MCP_ENABLED=true
+ORDER_MCP_URL=http://127.0.0.1:8000/orders-mcp/
+```
+
+调用超时复用 `CATALOG_MCP_TIMEOUT_SECONDS`。修改监听端口时同步修改订单 URL。
+`ORDER_MCP_ENABLED=false` 明确选择原本地订单工具，不进行隐式故障回退。
+独立部署时双方必须使用一致的签名配置；公网部署需要 HTTPS 和独立密钥管理。
+
+`app/mcp/auth.py` 管理内部凭证与 ASGI 认证，`app/mcp/orders.py` 注册订单工具。
+新增真实 HTTP 测试覆盖两个买家并发隔离、跨用户订单、详情与物流、缺少凭证，
+并验证过期、错误 audience、scope、subject 和篡改签名会被拒绝。

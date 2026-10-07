@@ -13,6 +13,8 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.db.initialize import initialize_database
 from app.mcp.server import create_catalog_mcp
+from app.mcp.orders import create_order_mcp
+from app.mcp.auth import OrderMcpAuthentication
 
 
 @asynccontextmanager
@@ -28,7 +30,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.conversation_service = None
         application.state.conversation_service_lock = asyncio.Lock()
         async with application.state.catalog_mcp.session_manager.run():
-            yield
+            async with application.state.order_mcp.session_manager.run():
+                yield
 
 
 def create_app() -> FastAPI:
@@ -49,6 +52,12 @@ def create_app() -> FastAPI:
     catalog_mcp = create_catalog_mcp()
     application.state.catalog_mcp = catalog_mcp
     application.mount("/mcp", catalog_mcp.streamable_http_app())
+    order_mcp = create_order_mcp()
+    application.state.order_mcp = order_mcp
+    application.mount(
+        "/orders-mcp",
+        OrderMcpAuthentication(order_mcp.streamable_http_app()),
+    )
     return application
 
 

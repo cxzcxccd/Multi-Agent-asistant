@@ -16,6 +16,7 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=3.1.1",
   "mcp>=1.28,<2",
   "pydantic-settings",
+  "pyjwt>=2.10,<3",
   "pymilvus>=2.6,<3",
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]",
