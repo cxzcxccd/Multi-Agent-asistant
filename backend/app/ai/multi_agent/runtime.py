@@ -82,6 +82,7 @@ class MultiAgentRuntime:
         system_prompt: str | None = None,
         max_tool_rounds: int = 4,
         checkpointer: BaseCheckpointSaver[Any] | None = None,
+        catalog_tools: list[BaseTool] | None = None,
     ) -> None:
         self._model_client = model_client
         self._query_preprocessor = query_preprocessor or create_query_preprocessor()
@@ -91,6 +92,7 @@ class MultiAgentRuntime:
         self._system_prompt = system_prompt or load_customer_service_prompt()
         self._max_tool_rounds = max_tool_rounds
         self._checkpointer = checkpointer
+        self._catalog_tools = catalog_tools
         self._client_cache: dict[AgentName, Any] = {}
         self._graph = self._build_graph()
 
@@ -691,8 +693,13 @@ class MultiAgentRuntime:
         self._client_cache[AgentName.SYNTHESIS] = client
         return client
 
-    @staticmethod
-    def _tools_for_task(task: AgentTask) -> list[BaseTool]:
+    def _tools_for_task(self, task: AgentTask) -> list[BaseTool]:
+        if task.agent_name is AgentName.PRODUCT and self._catalog_tools is not None:
+            selected: list[BaseTool] = []
+            for tool in self._catalog_tools:
+                if tool.name in task.allowed_tools:
+                    selected.append(tool)
+            return selected
         plan = AgentPlan(
             agents=[task.agent_name],
             primary_agent=task.agent_name,
@@ -848,8 +855,20 @@ def create_multi_agent_runtime(
 ) -> MultiAgentRuntime:
     """使用当前模型和语义路由配置创建生产多 Agent 运行时。"""
 
+    from app.core.config import settings
+    from app.mcp.client import CatalogMcpClient
+
+    catalog_tools = None
+    if settings.catalog_mcp_enabled:
+        client = CatalogMcpClient(
+            settings.catalog_mcp_url,
+            settings.catalog_mcp_timeout_seconds,
+        )
+        catalog_tools = client.tools()
+
     return MultiAgentRuntime(
         model_client=create_model_client(),
         query_preprocessor=create_query_preprocessor(),
         checkpointer=checkpointer,
+        catalog_tools=catalog_tools,
     )

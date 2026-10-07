@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     checkpoint_database_path: str = str(DEFAULT_CHECKPOINT_PATH)
+    catalog_mcp_enabled: bool = True
+    catalog_mcp_url: str = "http://127.0.0.1:8000/mcp/"
+    catalog_mcp_timeout_seconds: float = Field(default=15, gt=0, le=120)
     auth_secret: SecretStr = SecretStr("local-demo-secret-change-before-deploy")
     auth_token_minutes: int = Field(default=30, ge=5, le=1440)
     refresh_token_days: int = Field(default=7, ge=1, le=90)

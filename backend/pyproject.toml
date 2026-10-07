@@ -14,6 +14,7 @@ dependencies = [
   "langchain-openai",
   "langgraph",
   "langgraph-checkpoint-sqlite>=3.1.1",
+  "mcp>=1.28,<2",
   "pydantic-settings",
   "pymilvus>=2.6,<3",
   "sqlalchemy>=2.0,<3",

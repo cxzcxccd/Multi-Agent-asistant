@@ -12,6 +12,7 @@ from app.ai.checkpoints import open_sqlite_checkpointer
 from app.api.router import api_router
 from app.core.config import settings
 from app.db.initialize import initialize_database
+from app.mcp.server import create_catalog_mcp
 
 
 @asynccontextmanager
@@ -26,7 +27,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.checkpointer = checkpointer
         application.state.conversation_service = None
         application.state.conversation_service_lock = asyncio.Lock()
-        yield
+        async with application.state.catalog_mcp.session_manager.run():
+            yield
 
 
 def create_app() -> FastAPI:
@@ -44,6 +46,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     application.include_router(api_router, prefix="/api")
+    catalog_mcp = create_catalog_mcp()
+    application.state.catalog_mcp = catalog_mcp
+    application.mount("/mcp", catalog_mcp.streamable_http_app())
     return application
 
 

@@ -35,7 +35,7 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 
 当前边界：LangGraph 运行时已经可以完成真实模型与商品、订单、售后及知识检索工具的调用闭环，
 业务数据和知识正文由 SQLite 持久保存，知识向量由 Milvus 持久保存；前端可以实时显示模型文本、检索来源和工具进度。
-LangGraph 状态保存在独立的 `data/checkpoints.db`，不会与业务表混用。售后确认的 `interrupt/resume` HTTP 协议已经接入；MCP 尚未实现，人工接管、回复与状态切换已持久化。
+LangGraph 状态保存在独立的 `data/checkpoints.db`，不会与业务表混用。售后确认的 `interrupt/resume` HTTP 协议已经接入；商品查询 MCP 已接入，人工接管、回复与状态切换已持久化。
 
 ## 当前调用链
 
@@ -490,7 +490,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 182 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 183 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -501,4 +501,36 @@ uv run --no-cache pytest -q
 2. 为 SSE 增加刷新后的自动重连、断线恢复游标和生产环境代理配置。
 3. 增加登录限流、认证审计和签名密钥轮换机制。
 
-任务级 Supervisor、依赖图、并行执行、汇总 Agent、运行记录、Checkpoint 持久化和售后确认恢复已经完成。下一步可增加服务重启后的待确认任务提醒、超时自动取消和跨进程任务队列；MCP 尚未接入。
+任务级 Supervisor、依赖图、并行执行、汇总 Agent、运行记录、Checkpoint 持久化和售后确认恢复已经完成。下一步可增加服务重启后的待确认任务提醒、超时自动取消和跨进程任务队列；下一步迁移订单工具到 MCP，并设计可信身份传递。
+
+
+## 商品 MCP 服务
+
+应用启动时挂载 `/mcp/` Streamable HTTP 服务，并管理其 session manager 生命周期。
+采用官方 Python SDK `mcp>=1.28,<2`，固定主版本以保持 API 兼容。
+目前仅暴露无需买家身份的 `search_products` 与 `get_product`，复用现有商品服务、
+Pydantic 参数模型和结构化错误；订单、售后和知识工具继续使用本地实现。
+
+生产运行时的商品 Agent 默认使用 MCP 客户端适配工具：
+
+```text
+商品 Agent → LangChain 工具适配 → initialize / tools/list / tools/call
+  → http://127.0.0.1:8000/mcp/ → 商品工具 → ProductService → SQLite
+```
+
+`app/mcp/server.py` 注册商品工具；`app/mcp/client.py` 管理连接、发现工具并将结果
+交给 Agent。每次调用建立独立协议会话，限制总超时，保留工具白名单；失败时报告错误，
+不会自动切换本地调用掩盖故障。该端点当前只提供公共商品信息，不提供受保护订单数据。
+
+```dotenv
+CATALOG_MCP_ENABLED=true
+CATALOG_MCP_URL=http://127.0.0.1:8000/mcp/
+CATALOG_MCP_TIMEOUT_SECONDS=15
+```
+
+修改后端端口时需要同时修改 URL；设置 `CATALOG_MCP_ENABLED=false` 可明确选择本地商品工具。
+同一 FastAPI 进程托管 MCP，因此正常启动后端即可，无需额外启动进程。
+可使用 MCP Inspector 连接该 URL 检查工具列表与调用结果。
+
+新增 `tests/test_catalog_mcp.py` 使用真实 MCP SDK 和临时 HTTP 端口验证搜索、详情、
+不存在商品、非法参数和不存在工具，无需真实大模型。
