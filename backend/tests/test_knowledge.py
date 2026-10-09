@@ -55,7 +55,7 @@ def create_service(database_path: Path) -> KnowledgeService:
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     repository = KnowledgeRepository(session_factory)
-    knowledge_path = Path(__file__).resolve().parents[1] / "data" / "knowledge"
+    knowledge_path = Path(__file__).resolve().parent / "fixtures" / "knowledge"
     chunks = load_knowledge_directory(knowledge_path)
     provider = LocalHashEmbeddingProvider()
     vector_store = InMemoryKnowledgeVectorStore()
@@ -137,7 +137,7 @@ def test_incremental_index_only_embeds_changed_chunks(tmp_path: Path) -> None:
     provider = LocalHashEmbeddingProvider()
     vector_store = InMemoryKnowledgeVectorStore()
     indexer = KnowledgeIndexer(repository, provider, vector_store)
-    knowledge_path = Path(__file__).resolve().parents[1] / "data" / "knowledge"
+    knowledge_path = Path(__file__).resolve().parent / "fixtures" / "knowledge"
     chunks = load_knowledge_directory(knowledge_path)
 
     first = indexer.rebuild(chunks)

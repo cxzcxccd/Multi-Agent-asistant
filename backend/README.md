@@ -1,5 +1,11 @@
 # 极客优选后端
 
+## 官方来源知识库（2026-10-09）
+
+当前运行目录 `data/knowledge` 使用 `sources.json` 清单加载 6 份京东、淘宝官方公开页面的核验摘要，共 11 块。`scripts/import_official_knowledge.py` 实际访问原页面，核验关键片段并记录来源哈希；加载器给每个块附来源 URL、平台、范围与日期。详见 [采集说明](data/knowledge_sources/README.md)。未采集的商品使用指南已从运行知识库移除，具体商品参数继续走商品工具。
+
+旧演示文档移至 `tests/fixtures/knowledge` 作为固定测试数据。本文以下旧评测说明与历史成绩对应旧文档，不能用于证明新知识库效果；12 条和 JDDC 500 条均需重新核对标签。运行后端时会自动同步索引，也可通过 `POST /api/staff/knowledge/reindex` 重建，依赖 Milvus 可用。
+
 ## 会话记忆
 
 会话服务在调用多 Agent 前组装记忆；原始消息和 Checkpoint 不替代彼此。

@@ -1,0 +1,12 @@
+{
+  "platform": "京东",
+  "category": "payment_policy",
+  "url": "https://help.jd.com/user/issue/130-978.html",
+  "scope": "京东售后退款；具体方式及处理进度需核对订单和支付渠道",
+  "collected_at": "2026-10-09T15:46:07+08:00",
+  "text_sha256": "df4988bd1c1d4a3b187a3639912811a6169cbb2f8fc2f3757b289f0a34f644a8",
+  "representation": "人工核验摘要，非全文镜像",
+  "verified_text_fragments": [
+    "银行退款处理周期"
+  ]
+}

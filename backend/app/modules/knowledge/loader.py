@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import cast
 import hashlib
+import json
 
 from app.core.config import settings
 from app.modules.knowledge.schemas import KnowledgeCategory, KnowledgeChunk
@@ -24,11 +25,21 @@ def load_knowledge_document(path: Path) -> list[KnowledgeChunk]:
         "payment_policy",
         "product_guide",
     }
-    if path.stem not in valid_categories:
+    metadata = {}
+    manifest_path = path.parent / "sources.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # 有来源清单的目录只加载清单中的文档，避免混入旧演示政策。
+        if path.stem not in manifest:
+            return []
+        metadata = manifest[path.stem]
+    category_name = metadata.get("category", path.stem)
+    if category_name not in valid_categories:
         return []
-    category = cast(KnowledgeCategory, path.stem)
+    category = cast(KnowledgeCategory, category_name)
     raw_text = path.read_text(encoding="utf-8")
-    document_version = hashlib.sha256(raw_text.encode()).hexdigest()[:12]
+    version_text = raw_text + json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+    document_version = hashlib.sha256(version_text.encode()).hexdigest()[:12]
     lines = raw_text.splitlines()
     title = path.stem
     section = "正文"
@@ -45,6 +56,14 @@ def load_knowledge_document(path: Path) -> list[KnowledgeChunk]:
             overlap=settings.knowledge_chunk_overlap,
         )
         for part_index, part in enumerate(parts):
+            if metadata:
+                # 每个子块都保留来源和适用范围，避免长文切块后丢失平台信息。
+                provenance = (
+                    f"平台：{metadata['platform']}；适用范围：{metadata['scope']}\n"
+                    f"原文：{metadata['url']}\n"
+                    f"采集时间：{metadata['collected_at']}；资料形式：人工核验摘要\n"
+                )
+                part = provenance + part
             source = f"{path.name}#{section}"
             if len(parts) > 1:
                 source = f"{source}-{part_index + 1}"

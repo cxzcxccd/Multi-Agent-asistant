@@ -1,0 +1,120 @@
+{
+  "description": "公开官方页面的人工核验摘要；不是全文转载。页面更新后需重新核验摘要。",
+  "sources": [
+    {
+      "document_key": "jd_return_policy",
+      "category": "return_policy",
+      "platform": "京东",
+      "title": "京东自营七天无理由退货",
+      "url": "https://help.jd.com/user/issue/327-3886.html",
+      "scope": "仅适用于京东自营带有相应服务标识的商品；具体商品以详情页为准",
+      "sections": [
+        {
+          "title": "申请条件",
+          "required_text": "商品完好",
+          "summary": "京东自营商品是否支持七天无理由退货，应核对商品详情页的服务标识。符合规则的申请期限从签收次日开始计算，为七个自然日。商品需保持功能和品质，相关配件、说明书等应齐全。"
+        },
+        {
+          "title": "拆封与运费",
+          "required_text": "合理的调试",
+          "summary": "为检查商品而合理拆封、调试，不必然造成商品不完好；超出检查需要的使用造成明显价值贬损时可能不符合要求。一般由消费者承担退回运费，另有约定或免费上门退换权益的，按对应约定或权益处理。"
+        }
+      ]
+    },
+    {
+      "document_key": "jd_digital_after_sales",
+      "category": "return_policy",
+      "platform": "京东",
+      "title": "京东自营手机数码售后细则",
+      "url": "https://help.jd.com/user/issue/325-915.html",
+      "scope": "京东自营手机、数码、IT类；特殊商品要求以详情页为准",
+      "sections": [
+        {
+          "title": "退换货条件",
+          "required_text": "15日内可换货",
+          "summary": "页面针对手机、数码、IT类自营商品说明：自实际收货次日起，七日内可退货，十五日内可换货；须结合质量问题、商品完好和特殊商品限制判断，不能理解为所有商品均无条件退换。"
+        },
+        {
+          "title": "返修资料和数据",
+          "required_text": "数据导出服务",
+          "summary": "质量问题退换货需按售后要求提供检测资料以及商品、附件、购买凭证等，电子发票无需随货寄回。存储设备返修前应自行备份或导出数据，京东不提供数据保存和导出服务。"
+        }
+      ]
+    },
+    {
+      "document_key": "jd_warranty_service",
+      "category": "warranty_policy",
+      "platform": "京东",
+      "title": "京东365天原厂维修服务",
+      "url": "https://help.jd.com/user/issue/942-3933.html",
+      "scope": "仅适用于带有365天原厂维修标识、满足页面条件的京东自营商品",
+      "sections": [
+        {
+          "title": "服务范围",
+          "required_text": "365天原厂维修",
+          "summary": "带有该服务标识的京东自营商品，在保修期内发生质量问题且申请地址位于上门取件范围时，可在线申请，由京东提供原厂授权的检测和维修服务。"
+        },
+        {
+          "title": "服务限制",
+          "required_text": "人为损坏",
+          "summary": "国家三包或厂家免费保修范围以外的问题，例如人为损坏、经非品牌官方售后维修或超过质保期，不享受本项服务。本条描述特定服务权益，不代表全部数码商品统一保修365天。"
+        }
+      ]
+    },
+    {
+      "document_key": "jd_shipping_policy",
+      "category": "shipping_policy",
+      "platform": "京东",
+      "title": "京东发货与签收规范",
+      "url": "https://help.jd.com/help/viewQuestion-976-2515.html",
+      "scope": "京东页面所述买卖双方发货签收规范；具体时限以订单及相应规则为准",
+      "sections": [
+        {
+          "title": "发货与退款",
+          "required_text": "征得消费者同意",
+          "summary": "卖家应遵守平台要求的发货时间，特殊规定除外。消费者申请退款时如果尚未发货，卖家需要先征得消费者同意再发货。"
+        },
+        {
+          "title": "收货信息和物流",
+          "required_text": "快递信息",
+          "summary": "除另有约定外，卖家应按照订单约定的地址和收货人信息配送，发货后及时更新交易页面的商品与快递信息。该规范没有为每个订单提供具体送达日期。"
+        }
+      ]
+    },
+    {
+      "document_key": "jd_refund_policy",
+      "category": "payment_policy",
+      "platform": "京东",
+      "title": "京东售后退款说明",
+      "url": "https://help.jd.com/user/issue/130-978.html",
+      "scope": "京东售后退款；具体方式及处理进度需核对订单和支付渠道",
+      "sections": [
+        {
+          "title": "退款到账与原返",
+          "required_text": "银行退款处理周期",
+          "summary": "退款到账所需时间由京东退款处理和银行退款处理两部分组成。页面中的原返表示退回该订单原来的支付方式；不能仅凭售后审核通过就判断款项已经到账。"
+        }
+      ]
+    },
+    {
+      "document_key": "taobao_consumer_protection",
+      "category": "return_policy",
+      "platform": "淘宝",
+      "title": "淘宝消费者保障服务协议",
+      "url": "https://terms.alicdn.com/legal-agreement/terms/suit_bu1_taobao/suit_bu1_taobao201709261344_28562.html",
+      "scope": "淘宝卖家消费者保障基础义务；不是针对某一型号或店铺的额外承诺",
+      "sections": [
+        {
+          "title": "如实描述与无理由退货",
+          "required_text": "商品完好",
+          "summary": "淘宝协议要求卖家承担如实描述、七天无理由退货等基础消费者保障义务。无理由退货应依据法律和淘宝相关规则，以商品完好等适用条件为前提。"
+        },
+        {
+          "title": "售后纠纷处理",
+          "required_text": "积极与买家沟通",
+          "summary": "出现无理由退货、商品与描述不符、质量问题或违反特色服务承诺等情况时，卖家应主动沟通、保障买家权益。本协议不能用于推断所有商品的保修期限、退款时限或额外服务。"
+        }
+      ]
+    }
+  ]
+}

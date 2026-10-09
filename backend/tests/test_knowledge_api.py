@@ -28,7 +28,7 @@ def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Pat
         repository = KnowledgeRepository(session_factory)
         provider = LocalHashEmbeddingProvider()
         vector_store = InMemoryKnowledgeVectorStore()
-        knowledge_path = Path(__file__).resolve().parents[1] / "data" / "knowledge"
+        knowledge_path = Path(__file__).resolve().parent / "fixtures" / "knowledge"
         KnowledgeIndexer(repository, provider, vector_store).rebuild(
             load_knowledge_directory(knowledge_path)
         )

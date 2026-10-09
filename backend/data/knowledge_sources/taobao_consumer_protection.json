@@ -1,0 +1,13 @@
+{
+  "platform": "淘宝",
+  "category": "return_policy",
+  "url": "https://terms.alicdn.com/legal-agreement/terms/suit_bu1_taobao/suit_bu1_taobao201709261344_28562.html",
+  "scope": "淘宝卖家消费者保障基础义务；不是针对某一型号或店铺的额外承诺",
+  "collected_at": "2026-10-09T15:46:07+08:00",
+  "text_sha256": "847c1590d6a9813cdd57cbbfe57091bde626cc55588cbe43e94938261f3db36b",
+  "representation": "人工核验摘要，非全文镜像",
+  "verified_text_fragments": [
+    "商品完好",
+    "积极与买家沟通"
+  ]
+}
