@@ -3,11 +3,18 @@
   "category": "shipping_policy",
   "url": "https://help.jd.com/help/viewQuestion-976-2515.html",
   "scope": "京东页面所述买卖双方发货签收规范；具体时限以订单及相应规则为准",
-  "collected_at": "2026-10-09T15:46:07+08:00",
+  "collected_at": "2026-10-09T15:59:31+08:00",
   "text_sha256": "9dff1dc9bc3a2b96c1d75778f575eb6a80ce0cc4cd66333a47af1ed781176b92",
   "representation": "人工核验摘要，非全文镜像",
   "verified_text_fragments": [
     "征得消费者同意",
-    "快递信息"
+    "追回",
+    "快递信息",
+    "指定地点提取",
+    "明确同意",
+    "不准确",
+    "未征得收货人同意",
+    "表面不一致",
+    "保管费"
   ]
 }

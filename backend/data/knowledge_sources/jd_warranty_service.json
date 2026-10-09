@@ -3,11 +3,16 @@
   "category": "warranty_policy",
   "url": "https://help.jd.com/user/issue/942-3933.html",
   "scope": "仅适用于带有365天原厂维修标识、满足页面条件的京东自营商品",
-  "collected_at": "2026-10-09T15:46:07+08:00",
+  "collected_at": "2026-10-09T15:59:31+08:00",
   "text_sha256": "9343f3053b4ed08f492717a70da9f5f3550cd5479475ab490b85528663433e0c",
   "representation": "人工核验摘要，非全文镜像",
   "verified_text_fragments": [
     "365天原厂维修",
-    "人为损坏"
+    "售后类型选择维修",
+    "100分钟",
+    "个人授权ID锁",
+    "快递费用凭证",
+    "非品牌官方售后",
+    "付费维修"
   ]
 }

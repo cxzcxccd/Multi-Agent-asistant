@@ -4,7 +4,7 @@
     "category": "return_policy",
     "url": "https://help.jd.com/user/issue/327-3886.html",
     "scope": "仅适用于京东自营带有相应服务标识的商品；具体商品以详情页为准",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "a4da4d2902aff3224c8b64c87f0649d2aadf2666e369965df6d2e4c6121bebfe",
     "representation": "人工核验摘要，非全文镜像"
   },
@@ -13,7 +13,7 @@
     "category": "return_policy",
     "url": "https://help.jd.com/user/issue/325-915.html",
     "scope": "京东自营手机、数码、IT类；特殊商品要求以详情页为准",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "05f0ec9a628043355f3e71f62c317443b7e17dfd5b2bbe37fa5c6376bdfd54e8",
     "representation": "人工核验摘要，非全文镜像"
   },
@@ -22,7 +22,7 @@
     "category": "warranty_policy",
     "url": "https://help.jd.com/user/issue/942-3933.html",
     "scope": "仅适用于带有365天原厂维修标识、满足页面条件的京东自营商品",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "9343f3053b4ed08f492717a70da9f5f3550cd5479475ab490b85528663433e0c",
     "representation": "人工核验摘要，非全文镜像"
   },
@@ -31,7 +31,7 @@
     "category": "shipping_policy",
     "url": "https://help.jd.com/help/viewQuestion-976-2515.html",
     "scope": "京东页面所述买卖双方发货签收规范；具体时限以订单及相应规则为准",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "9dff1dc9bc3a2b96c1d75778f575eb6a80ce0cc4cd66333a47af1ed781176b92",
     "representation": "人工核验摘要，非全文镜像"
   },
@@ -40,7 +40,7 @@
     "category": "payment_policy",
     "url": "https://help.jd.com/user/issue/130-978.html",
     "scope": "京东售后退款；具体方式及处理进度需核对订单和支付渠道",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "df4988bd1c1d4a3b187a3639912811a6169cbb2f8fc2f3757b289f0a34f644a8",
     "representation": "人工核验摘要，非全文镜像"
   },
@@ -49,7 +49,7 @@
     "category": "return_policy",
     "url": "https://terms.alicdn.com/legal-agreement/terms/suit_bu1_taobao/suit_bu1_taobao201709261344_28562.html",
     "scope": "淘宝卖家消费者保障基础义务；不是针对某一型号或店铺的额外承诺",
-    "collected_at": "2026-10-09T15:46:07+08:00",
+    "collected_at": "2026-10-09T15:59:31+08:00",
     "text_sha256": "847c1590d6a9813cdd57cbbfe57091bde626cc55588cbe43e94938261f3db36b",
     "representation": "人工核验摘要，非全文镜像"
   }

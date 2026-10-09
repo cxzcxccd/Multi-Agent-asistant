@@ -11,7 +11,7 @@ def test_official_documents_keep_platform_scope_and_url() -> None:
     manifest = json.loads((directory / "sources.json").read_text(encoding="utf-8"))
     chunks = load_knowledge_directory(directory)
     assert len(manifest) == 6
-    assert len(chunks) == 11
+    assert len(chunks) == 47
     platforms = set()
     for chunk in chunks:
         metadata = manifest[chunk.document_key]

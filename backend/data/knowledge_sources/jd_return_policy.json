@@ -3,11 +3,15 @@
   "category": "return_policy",
   "url": "https://help.jd.com/user/issue/327-3886.html",
   "scope": "仅适用于京东自营带有相应服务标识的商品；具体商品以详情页为准",
-  "collected_at": "2026-10-09T15:46:07+08:00",
+  "collected_at": "2026-10-09T15:59:31+08:00",
   "text_sha256": "a4da4d2902aff3224c8b64c87f0649d2aadf2666e369965df6d2e4c6121bebfe",
   "representation": "人工核验摘要，非全文镜像",
   "verified_text_fragments": [
-    "商品完好",
-    "合理的调试"
+    "商品详情页",
+    "自然日",
+    "商标标识",
+    "合理的调试",
+    "免费上门退换权益",
+    "滥用消费者权利"
   ]
 }

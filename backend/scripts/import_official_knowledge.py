@@ -1,6 +1,7 @@
 """采集已核验的官方页面，将有来源的摘要导入知识库。"""
 
 import hashlib
+import argparse
 import json
 import re
 from datetime import datetime
@@ -58,7 +59,7 @@ def fetch_page(url: str) -> tuple[str, str]:
     return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def import_documents() -> None:
+def import_documents(accept_reviewed_changes: bool = False) -> None:
     configuration = json.loads((SOURCE_DIRECTORY / "sources.json").read_text(encoding="utf-8"))
     collected_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
     prepared: list[tuple[str, str, dict]] = []
@@ -77,7 +78,7 @@ def import_documents() -> None:
         snapshot_path = SOURCE_DIRECTORY / f"{document_key}.json"
         if snapshot_path.exists():
             previous = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            if previous["text_sha256"] != text_hash:
+            if previous["text_sha256"] != text_hash and not accept_reviewed_changes:
                 raise ValueError(f"{document_key} 页面已变化，请人工核验摘要后更新来源快照")
         metadata = {
             "platform": source["platform"],
@@ -106,4 +107,11 @@ def import_documents() -> None:
 
 
 if __name__ == "__main__":
-    import_documents()
+    parser = argparse.ArgumentParser(description="导入人工核验过的官方知识摘要")
+    parser.add_argument(
+        "--accept-reviewed-changes",
+        action="store_true",
+        help="仅在人工重新核验全部页面与摘要后允许更新来源哈希",
+    )
+    arguments = parser.parse_args()
+    import_documents(accept_reviewed_changes=arguments.accept_reviewed_changes)
