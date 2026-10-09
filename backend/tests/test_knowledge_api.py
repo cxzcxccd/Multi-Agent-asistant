@@ -36,7 +36,7 @@ def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Pat
             repository,
             provider,
             vector_store,
-            minimum_score=0.12,
+            minimum_score=0.32,
         )
         app.dependency_overrides[get_knowledge_service] = lambda: service
 

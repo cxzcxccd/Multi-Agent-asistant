@@ -39,9 +39,13 @@ class KnowledgeSearchItem(BaseModel):
     section: str
     content: str
     source: str
-    score: float = Field(ge=0)
-    keyword_score: float = Field(ge=0)
+    score: float = Field(ge=0, description="当前策略分数：BM25、余弦、RRF 或重排分数")
+    keyword_score: float = Field(ge=0, description="BM25 原始分数，未归一化到 0 到 1")
     vector_score: float = Field(ge=0)
+    score_type: Literal["bm25", "cosine", "rrf", "rerank"] | None = None
+    keyword_rank: int | None = Field(default=None, ge=1)
+    vector_rank: int | None = Field(default=None, ge=1)
+    rrf_score: float | None = Field(default=None, ge=0)
 
 
 class KnowledgeSearchResponse(BaseModel):

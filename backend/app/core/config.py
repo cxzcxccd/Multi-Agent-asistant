@@ -60,8 +60,12 @@ class Settings(BaseSettings):
     intent_embedding_cache_dir: str = str(DEFAULT_INTENT_CACHE_PATH)
     intent_route_min_score: float = Field(default=0.55, ge=-1, le=1)
     intent_route_min_margin: float = Field(default=0.0, ge=0, le=1)
-    knowledge_vector_weight: float = Field(default=0.7, ge=0, le=1)
+    # 旧环境变量名继续有效，但此阈值现在仅用于向量候选，不过滤 RRF 分数。
     knowledge_min_score: float = Field(default=0.32, ge=0, le=1)
+    knowledge_bm25_k1: float = Field(default=1.2, gt=0)
+    knowledge_bm25_b: float = Field(default=0.75, ge=0, le=1)
+    knowledge_bm25_min_score: float = Field(default=0.0, ge=0)
+    knowledge_rrf_rank_constant: int = Field(default=60, ge=1)
     knowledge_chunk_size: int = Field(default=500, ge=100, le=2000)
     knowledge_chunk_overlap: int = Field(default=60, ge=0, le=500)
     knowledge_vector_candidates: int = Field(default=20, ge=5, le=200)

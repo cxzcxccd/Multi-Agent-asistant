@@ -325,7 +325,7 @@ backend/
 
 知识模块中的 `repository.py` 保存文档正文、来源、内容哈希和 Embedding 模型名；
 `vector_store.py` 通过 PyMilvus 创建集合、写入向量并执行 COSINE Top-K 搜索；`indexer.py`
-只为新增、修改或向量缺失的片段重新生成向量；`service.py` 合并 Milvus 向量分数与关键词分数。
+只为新增、修改或向量缺失的片段重新生成向量；`service.py` 将 BM25 与 Milvus 候选按 RRF 排名融合。
 
 `runtime.py` 负责“预处理、模型和工具怎样协作”：把系统提示词、Query 分析和对话交给模型，检查模型的
 `tool_calls`，通过 LangGraph `ToolNode` 执行商品、订单或物流工具，再把工具结果送回模型，直到
@@ -397,8 +397,22 @@ RAG 知识索引也默认使用同一个 `BAAI/bge-small-zh-v1.5`，文档通过
 `passage_embed` 编码，查询通过 `query_embed` 编码，生成的 512 维向量写入 Milvus。
 模型或向量维度变化时，索引器会重建 Milvus Collection，并根据 `embedding_model`
 重新生成全部知识向量。特征哈希仅供自动化测试或显式降级使用。
-当前 BGE 混合检索最低分默认为 `0.32`，可通过 `KNOWLEDGE_MIN_SCORE` 调整；该阈值需要随
-知识规模和独立评测集继续校准。
+向量候选最低余弦分数默认为 `0.32`，继续通过 `KNOWLEDGE_MIN_SCORE` 调整，仅用于向量一路。BM25 默认排除零分，可用 `KNOWLEDGE_BM25_MIN_SCORE` 设置原始分数阈值。两者均需用新知识库独立标注集校准，不能直接过滤 RRF 分数。
+
+## BM25 与 RRF 混合检索
+
+- `bm25.py`：实际计算词频、文档频率、平均文档长度，使用正值 IDF 的 BM25 公式；默认 `k1=1.2`、`b=0.75`。中文沿用相邻双字词项，英文数字按连续词项切分，保留重复词项统计 TF。没有使用 Elasticsearch，也没有额外分词模型。
+- `fusion.py`：等权 RRF，排名从 1 起，`score = sum(1 / (60 + rank))`；同一路重复命中只计一次，缺失一路不贡献分数。参数由 `KNOWLEDGE_RRF_RANK_CONSTANT` 控制，不再使用旧 `KNOWLEDGE_VECTOR_WEIGHT`。
+- `service.py`：每次查询读取当前知识块，构建对应分类范围的 BM25 统计，避免文档更新后统计过期。BM25 与向量各取最多 `KNOWLEDGE_VECTOR_CANDIDATES` 个候选（默认20，至少覆盖请求数量），先分别过滤，再对候选并集融合，默认返回3条。相同文档通过 `document_key:position` 去重。
+- 元数据中的原始 URL、采集日期不参加 BM25 和重排；平台及适用范围仍保留。原始正文与来源引用不改变，已有 BGE 向量无需因本次算法变更重新生成。
+- 选择 `hybrid_rerank` 时，RRF 排序的前20条交给原 BGE 重排模型；空候选不调用重排。`keyword` 标识继续用于 API 兼容，现在表示 BM25；`vector` 仅用向量，不再退回关键词。混合模式向量候选为空时返回 `keyword_fallback`，连接故障仍返回明确错误。
+- 返回结果新增 `score_type`、`keyword_rank`、`vector_rank`、`rrf_score`。`keyword_score` 是未归一化的 BM25 原始分数；`score` 可能是 BM25、余弦、RRF 或重排分数，不能跨策略直接比较。RRF 保留6位小数，最高双路首位分数约0.032787；它是排序分数而非置信度。
+
+本次只验证算法和真实检索链路，没有重新标注并评测47块官方知识库。旧12条哈希测试夹具在向量阈值0.32下 Recall@5 为0.9、MRR 为0.8333、无答案拒答为1.0；旧加权排名测试要求 MRR≥0.9，本次已如实记录排名变化。哈希夹具用于程序回归，不是当前真实 BGE 的质量结果。JDDC历史成绩也不能沿用，需在新知识库上重新标注后比较。
+
+真实链路抽查：问题“京东E卡能否退款成现金”，分类 `payment_policy`，在 BM25、向量和混合三种策略下均首位召回 `jd_refund_policy.md#京东E卡能否退款成现金`。本机一次运行的 BM25 原始分数13.345058、余弦分数0.851109，两个候选排名均为1，因此 RRF 为 `1/61 + 1/61 ≈ 0.032787`。这只是链路检查，不是独立数据集准确率。
+
+参数及融合机制参考：[BM25 参数说明](https://www.elastic.co/docs/reference/elasticsearch/index-settings/similarity)、[RRF 排名融合说明](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion)。实现使用本地 Python 与原有 Milvus，未引入 Elasticsearch 服务。
 
 ## RAG 检索与回答评测
 

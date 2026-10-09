@@ -135,8 +135,9 @@ async def compare_knowledge_retrieval(
         repository=service.repository,
         embedding_provider=service.embedding_provider,
         vector_store=service.vector_store,
-        vector_weight=service.vector_weight,
         minimum_score=service.minimum_score,
+        bm25_minimum_score=service.bm25_minimum_score,
+        rrf_rank_constant=service.rrf_rank_constant,
         reranker=FastEmbedReranker(),
     )
     services = {
