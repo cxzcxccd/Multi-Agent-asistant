@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Protocol
 
-from pymilvus import MilvusClient
+from pymilvus import DataType, MilvusClient
 
 from app.core.config import Settings, settings
 from app.modules.knowledge.schemas import KnowledgeCategory
@@ -89,6 +90,10 @@ class MilvusKnowledgeVectorStore:
         self._database = configuration.milvus_database
         self._collection_name = configuration.milvus_collection
         self._timeout = configuration.milvus_timeout_seconds
+        self._hnsw_m = configuration.milvus_hnsw_m
+        self._hnsw_ef_construction = configuration.milvus_hnsw_ef_construction
+        self._hnsw_ef = configuration.milvus_hnsw_ef
+        self._collection_lock = Lock()
         self._client = client
 
     @property
@@ -96,28 +101,74 @@ class MilvusKnowledgeVectorStore:
         return self._collection_name
 
     def ensure_collection(self, dimensions: int) -> None:
+        # 防止同一个存储实例的并发请求重复迁移索引；不作为分布式锁。
+        with self._collection_lock:
+            self._ensure_collection(dimensions)
+
+    def _ensure_collection(self, dimensions: int) -> None:
         client = self._get_client()
         try:
             if client.has_collection(self.collection_name, timeout=self._timeout):
                 current_dimensions = self._collection_dimensions(client)
                 if current_dimensions == dimensions:
+                    self._ensure_hnsw_index(client)
                     client.load_collection(self.collection_name, timeout=self._timeout)
                     return
                 client.drop_collection(self.collection_name, timeout=self._timeout)
 
+            # PyMilvus 的快捷建集合入口默认创建 AUTOINDEX，必须显式传入 Schema。
+            schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=True)
+            schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=200)
+            schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dimensions)
             client.create_collection(
                 collection_name=self.collection_name,
-                dimension=dimensions,
-                primary_field_name="id",
-                id_type="string",
-                max_length=200,
-                vector_field_name="vector",
-                metric_type="COSINE",
+                schema=schema,
+                index_params=self._hnsw_index_parameters(),
                 consistency_level="Strong",
                 timeout=self._timeout,
             )
         except Exception as error:
             self._raise_unavailable(error)
+
+    def _hnsw_index_parameters(self) -> Any:
+        parameters = MilvusClient.prepare_index_params()
+        parameters.add_index(
+            field_name="vector",
+            index_name="vector_hnsw",
+            index_type="HNSW",
+            metric_type="COSINE",
+            params={"M": self._hnsw_m, "efConstruction": self._hnsw_ef_construction},
+        )
+        return parameters
+
+    def _ensure_hnsw_index(self, client: Any) -> None:
+        vector_indexes: list[str] = []
+        for index_name in client.list_indexes(self.collection_name, timeout=self._timeout):
+            description = client.describe_index(self.collection_name, index_name, timeout=self._timeout)
+            if description.get("field_name") != "vector":
+                continue
+            parameters = dict(description)
+            nested_parameters = description.get("params")
+            if isinstance(nested_parameters, dict):
+                parameters.update(nested_parameters)
+            matches_configuration = (
+                parameters.get("index_type") == "HNSW"
+                and parameters.get("metric_type") == "COSINE"
+                and str(parameters.get("M")) == str(self._hnsw_m)
+                and str(parameters.get("efConstruction")) == str(self._hnsw_ef_construction)
+            )
+            if matches_configuration:
+                return
+            vector_indexes.append(index_name)
+        # 只删除向量索引，不删除集合、数据或其他字段索引。
+        client.release_collection(self.collection_name, timeout=self._timeout)
+        for index_name in vector_indexes:
+            client.drop_index(self.collection_name, index_name, timeout=self._timeout)
+        client.create_index(
+            collection_name=self.collection_name,
+            index_params=self._hnsw_index_parameters(),
+            timeout=self._timeout,
+        )
 
     def list_metadata(self) -> dict[str, VectorMetadata]:
         client = self._get_client()
@@ -197,7 +248,11 @@ class MilvusKnowledgeVectorStore:
                 filter=category_filter,
                 limit=limit,
                 output_fields=["id"],
-                search_params={"metric_type": "COSINE"},
+                anns_field="vector",
+                search_params={
+                    "metric_type": "COSINE",
+                    "params": {"ef": max(self._hnsw_ef, limit)},
+                },
                 timeout=self._timeout,
             )
         except Exception as error:

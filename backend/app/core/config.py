@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     milvus_database: str = "default"
     milvus_collection: str = "knowledge_chunks"
     milvus_timeout_seconds: float = Field(default=10, gt=0, le=120)
+    milvus_hnsw_m: int = Field(default=16, ge=2, le=2048)
+    milvus_hnsw_ef_construction: int = Field(default=200, ge=1)
+    milvus_hnsw_ef: int = Field(default=64, ge=1)
     intent_embedding_provider: str = "fastembed"
     intent_embedding_model: str = "BAAI/bge-small-zh-v1.5"
     intent_embedding_cache_dir: str = str(DEFAULT_INTENT_CACHE_PATH)
