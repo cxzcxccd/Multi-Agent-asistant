@@ -95,6 +95,11 @@ class RagEvaluationCaseResult(BaseModel):
     cited_sources: list[str] = Field(default_factory=list)
     citation_precision: float | None = Field(default=None, ge=0, le=1)
     answer_latency_ms: float | None = None
+    task_passed: bool | None = None
+    end_to_end_latency_ms: float | None = None
+    generation_usage: dict[str, int] | None = None
+    evaluation_usage: dict[str, int] | None = None
+    generation_cost: float | None = None
     answer_quality: "AnswerQualityScores | None" = None
     gold_answer: str | None = None
     gold_answer_quality: "AnswerQualityScores | None" = None
@@ -139,6 +144,14 @@ class RagEvaluationReport(BaseModel):
     answer_completeness: float = 0.0
     citation_precision: float = 0.0
     citation_correctness: float = 0.0
+    model_name: str | None = None
+    task_completion_rate: float | None = None
+    end_to_end_latency_p95_ms: float | None = None
+    input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
+    cost_currency: str | None = None
+    average_generation_cost: float | None = None
+    generation_usage_cases: int = 0
     results: list[RagEvaluationCaseResult]
 
 

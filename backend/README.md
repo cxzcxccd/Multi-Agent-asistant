@@ -633,3 +633,10 @@ ORDER_MCP_URL=http://127.0.0.1:8000/orders-mcp/
 `app/mcp/auth.py` 管理内部凭证与 ASGI 认证，`app/mcp/orders.py` 注册订单工具。
 新增真实 HTTP 测试覆盖两个买家并发隔离、跨用户订单、详情与物流、缺少凭证，
 并验证过期、错误 audience、scope、subject 和篡改签名会被拒绝。
+
+
+## RAG 运行指标实验
+
+新增 `scripts.evaluate_rag_runtime`：真实模型自主选择 `search_knowledge`，执行工具并生成答案，统计工具选择、参数契约、回答任务通过率、端到端 P95 和 Token 用量。运行命令、费用定义及样本局限见 [实验说明](../docs/rag-runtime-evaluation.md)。
+
+现有 `scripts.evaluate_rag` 同时记录逐条生成用量、评审/诊断用量、回答任务通过率和检索到答案完成 P95。通过 `--input-price-per-million`、`--output-price-per-million`、`--cost-currency` 输入实际单价；价格缺失或用量不完整时费用为 null。对比入口暂不接受价格参数，需要逐方案运行。费用为未考虑缓存折扣的模型用量估算，不是账单，也不是完整会话成本。

@@ -57,6 +57,9 @@ def parse_arguments() -> argparse.Namespace:
         default=BACKEND_ROOT / "data" / "evaluation" / "results",
         help="评测结果目录",
     )
+    parser.add_argument("--input-price-per-million", type=float, help="每百万输入Token价格，由用户提供")
+    parser.add_argument("--output-price-per-million", type=float, help="每百万输出Token价格，由用户提供")
+    parser.add_argument("--cost-currency", default="CNY")
     return parser.parse_args()
 
 
@@ -89,7 +92,12 @@ def main() -> None:
         arguments.cases,
         answer_engine,
         use_category=arguments.use_category,
+        input_price_per_million=arguments.input_price_per_million,
+        output_price_per_million=arguments.output_price_per_million,
+        cost_currency=arguments.cost_currency,
     )
+    if arguments.compare and arguments.input_price_per_million is not None:
+        raise ValueError("费用实验请逐方案运行，比较入口暂不支持价格参数")
     if arguments.compare:
         rerank_service = KnowledgeService(
             repository=repository,

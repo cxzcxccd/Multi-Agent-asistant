@@ -122,6 +122,7 @@ npm run format:check
 - RAG评测支持同集比较 BM25、BGE+Milvus 向量、RRF 混合和 RRF+BGE 重排四种方案，并通过正确知识块复跑区分检索错误与生成错误。旧加权混合成绩不适用于当前算法。
 - Milvus 向量字段显式使用 HNSW + COSINE，默认建图参数 M=16、efConstruction=200，搜索 ef=64。已有相同维度集合自动重建向量索引，保留数据；参数和迁移说明见后端 README。
 - JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
+- 新增 RAG 运行指标：回答任务通过率、检索到答案完成 P95、生成/评审 Token 分账及显式价格费用估算；知识工具选择和参数契约受控实验见 `docs/rag-runtime-evaluation.md`，不等同完整多 Agent 评测。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；商品及订单工具已接入 MCP Streamable HTTP；订单使用短期内部凭证隔离买家身份，售后和知识工具仍在本地执行。
 - 185 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、Checkpoint 恢复、售后确认并发控制、运行记录持久化和跨领域工具越权拦截。
 

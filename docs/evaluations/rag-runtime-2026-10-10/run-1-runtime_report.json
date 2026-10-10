@@ -1,0 +1,27 @@
+{
+  "scope": "单个知识工具的受控真实模型实验，不是完整多Agent或JDDC500评测",
+  "model": "deepseek-flash",
+  "cases": 7,
+  "retrieval_backend": "真实BGE+内存余弦",
+  "tool_selection_correct": 7,
+  "tool_selection_accuracy": 1.0,
+  "parameter_valid_cases": 3,
+  "parameter_cases": 6,
+  "parameter_accuracy": 0.5,
+  "parameter_definition": "Pydantic结构合法、分类一致、保留至少一个人工指定关键事实词；逐任务所有调用通过",
+  "task_successes": 4,
+  "task_completion_rate": 0.5714285714285714,
+  "task_definition": "调用无错误、工具选择正确、参数契约通过、模型评审三项分数均>=0.7；含正确拒答与问候",
+  "end_to_end_p95_ms": 4971.45,
+  "latency_cases": 7,
+  "latency_definition": "含模型选择工具、实际检索和最终回答，不含评审；只统计运行成功请求",
+  "usage_cases": 7,
+  "generation_usage": {
+    "input_tokens": 20245,
+    "output_tokens": 3042,
+    "total_tokens": 23287
+  },
+  "cost": null,
+  "cost_note": "未配置服务商价格，Token不等于账单；不含BGE本地计算成本",
+  "judge": "与生成同配置模型，独立调用但存在自评偏差"
+}

@@ -1,6 +1,7 @@
 """评估知识检索结果与基于知识生成的回答。"""
 
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Protocol
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.ai.model_client import ModelClient
+from app.core.config import settings
 from app.modules.knowledge.schemas import (
     AnswerQualityScores,
     KnowledgeSearchItem,
@@ -39,6 +41,7 @@ class ModelRagAnswerEngine:
 
     def __init__(self, model_client: ModelClient) -> None:
         self.model_client = model_client
+        self.usage_records: list[dict[str, int] | None] = []
 
     def generate(self, question: str, contexts: list[KnowledgeSearchItem]) -> str:
         context_text = self._format_contexts(contexts)
@@ -53,6 +56,9 @@ class ModelRagAnswerEngine:
             HumanMessage(content=f"用户问题：{question}\n\n知识资料：\n{context_text}"),
         ]
         response = self.model_client.invoke(messages)
+        # 只记录服务端返回的用量，不通过字符数猜测 Token。
+        usage = getattr(response, "usage_metadata", None)
+        self.usage_records.append(dict(usage) if usage else None)
         return self._message_text(response.content)
 
     def judge(
@@ -83,6 +89,9 @@ class ModelRagAnswerEngine:
             ),
         ]
         response = self.model_client.invoke(messages)
+        # 只记录服务端返回的用量，不通过字符数猜测 Token。
+        usage = getattr(response, "usage_metadata", None)
+        self.usage_records.append(dict(usage) if usage else None)
         raw_text = self._message_text(response.content)
         payload = self._parse_json_object(raw_text)
         return AnswerQualityScores.model_validate(payload)
@@ -122,7 +131,18 @@ class RagEvaluator:
         answer_engine: RagAnswerEngine | None = None,
         strategy: RetrievalStrategy = "hybrid",
         use_category: bool = False,
+        input_price_per_million: float | None = None,
+        output_price_per_million: float | None = None,
+        cost_currency: str = "CNY",
     ) -> None:
+        if (input_price_per_million is None) != (output_price_per_million is None):
+            raise ValueError("输入与输出价格必须同时提供")
+        for price in (input_price_per_million, output_price_per_million):
+            if price is not None and (not math.isfinite(price) or price < 0):
+                raise ValueError("价格必须是有限的非负数")
+        self.input_price_per_million = input_price_per_million
+        self.output_price_per_million = output_price_per_million
+        self.cost_currency = cost_currency
         self.service = service
         self.cases_path = cases_path
         self.answer_engine = answer_engine
@@ -184,11 +204,27 @@ class RagEvaluator:
             if not retrieval_passed:
                 error_type = "retrieval_error"
 
+            generation_usage = None
+            evaluation_usage = None
+            generation_cost = None
+            task_passed = None
+            end_to_end_latency = None
             if self.answer_engine is not None:
+                usage_records = getattr(self.answer_engine, "usage_records", [])
+                usage_start = len(usage_records)
                 answer_started = time.perf_counter()
                 generated_answer = self.answer_engine.generate(question, response.items)
                 answer_latency = (time.perf_counter() - answer_started) * 1000
                 answer_latencies.append(answer_latency)
+                # 截止答案生成结束，不包含评审及正确证据重跑。
+                end_to_end_latency = (time.perf_counter() - started) * 1000
+                if len(usage_records) > usage_start:
+                    generation_usage = usage_records[usage_start]
+                if generation_usage is not None and self.input_price_per_million is not None:
+                    generation_cost = (
+                        generation_usage.get("input_tokens", 0) * self.input_price_per_million
+                        + generation_usage.get("output_tokens", 0) * self.output_price_per_million
+                    ) / 1_000_000
                 cited_sources = self._extract_citations(generated_answer)
                 citation_precision = self._citation_precision(cited_sources, response.items)
                 if expected_sources:
@@ -197,6 +233,7 @@ class RagEvaluator:
                     question, case["reference_answer"], response.items, generated_answer
                 )
                 answer_scores.append(quality)
+                task_passed = self._answer_passed(quality)
                 if not case["should_answer"]:
                     refusal_results.append(float(quality.correctness >= 0.7))
 
@@ -218,6 +255,9 @@ class RagEvaluator:
                 gold_answer = None
                 gold_quality = None
 
+            if self.answer_engine is not None:
+                evaluation_usage = self._sum_usage(usage_records[usage_start + 1:])
+
             results.append(
                 RagEvaluationCaseResult(
                     id=case["id"],
@@ -234,6 +274,11 @@ class RagEvaluator:
                     cited_sources=cited_sources,
                     citation_precision=citation_precision,
                     answer_latency_ms=None if answer_latency is None else round(answer_latency, 2),
+                    task_passed=task_passed,
+                    end_to_end_latency_ms=end_to_end_latency,
+                    generation_usage=generation_usage,
+                    evaluation_usage=evaluation_usage,
+                    generation_cost=generation_cost,
                     answer_quality=quality,
                     gold_answer=gold_answer,
                     gold_answer_quality=gold_quality,
@@ -268,8 +313,61 @@ class RagEvaluator:
             answer_completeness=self._score_average(answer_scores, "completeness"),
             citation_precision=self._average(citation_precisions),
             citation_correctness=self._score_average(answer_scores, "citation_correctness"),
+            model_name=settings.model_name if isinstance(self.answer_engine, ModelRagAnswerEngine) else None,
+            task_completion_rate=self._task_completion_rate(results),
+            end_to_end_latency_p95_ms=self._end_to_end_p95(results),
+            input_price_per_million=self.input_price_per_million,
+            output_price_per_million=self.output_price_per_million,
+            cost_currency=self.cost_currency if self.input_price_per_million is not None else None,
+            average_generation_cost=self._average_cost(results),
+            generation_usage_cases=self._usage_case_count(results),
             results=results,
         )
+
+    @staticmethod
+    def _usage_case_count(results: list[RagEvaluationCaseResult]) -> int:
+        count = 0
+        for result in results:
+            if result.generation_usage is not None:
+                count += 1
+        return count
+
+    @staticmethod
+    def _sum_usage(records: list[dict[str, int] | None]) -> dict[str, int] | None:
+        if not records:
+            return None
+        total = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        for record in records:
+            if record is None:
+                return None
+            for key in total:
+                total[key] += record.get(key, 0)
+        return total
+
+    @staticmethod
+    def _task_completion_rate(results: list[RagEvaluationCaseResult]) -> float | None:
+        values = []
+        for result in results:
+            if result.task_passed is not None:
+                values.append(float(result.task_passed))
+        return RagEvaluator._average(values) if values else None
+
+    @staticmethod
+    def _end_to_end_p95(results: list[RagEvaluationCaseResult]) -> float | None:
+        values = []
+        for result in results:
+            if result.end_to_end_latency_ms is not None:
+                values.append(result.end_to_end_latency_ms)
+        return RagEvaluator._percentile(values, 0.95) if values else None
+
+    @staticmethod
+    def _average_cost(results: list[RagEvaluationCaseResult]) -> float | None:
+        costs = []
+        for result in results:
+            if result.generation_cost is None:
+                return None
+            costs.append(result.generation_cost)
+        return sum(costs) / len(costs) if costs else None
 
     def save(self, report: RagEvaluationReport, output_directory: Path) -> tuple[Path, Path]:
         """保存逐条结果和便于阅读的汇总报告。"""
@@ -410,6 +508,16 @@ class RagEvaluator:
             f"- 回答完整性：{report.answer_completeness:.4f}",
             f"- 引用准确率：{report.citation_precision:.4f}",
             f"- 引用支持度：{report.citation_correctness:.4f}",
+            "",
+            "## RAG 运行指标",
+            "",
+            f"- 模型配置：{report.model_name}",
+            f"- 回答任务通过率（正确性、忠实度、完整性均至少0.7）：{report.task_completion_rate}",
+            f"- 检索到答案完成 P95（不含评审）：{report.end_to_end_latency_p95_ms} ms",
+            f"- Token 用量覆盖：{report.generation_usage_cases}/{report.answer_cases}",
+            f"- 单次回答平均估算费用：{report.average_generation_cost} {report.cost_currency}",
+            "- 未提供价格或未返回用量时，费用为 null，不按零费用处理。",
+            "- 此流程不测工具选择、工具参数或完整 Agent 会话成本。",
             "",
             "## 失败案例",
             "",

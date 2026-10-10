@@ -1,0 +1,104 @@
+[
+  {
+    "id": "runtime-ecard",
+    "query": "京东E卡支付的订单退款能变成现金吗？",
+    "category": "payment_policy",
+    "should_answer": true,
+    "expected_sources": [
+      "jd_refund_policy.md#京东E卡能否退款成现金"
+    ],
+    "reference_answer": "E卡支付不能直接退成现金，通常返还原支付E卡。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "E卡"
+    ]
+  },
+  {
+    "id": "runtime-backup",
+    "query": "京东数码设备返修前，我需要自己备份照片吗？",
+    "category": "return_policy",
+    "should_answer": true,
+    "expected_sources": [
+      "jd_digital_after_sales.md#存储设备返修前如何备份"
+    ],
+    "reference_answer": "返修前自行导出重要数据，京东不负责数据保存或导出。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "备份",
+      "照片",
+      "数据"
+    ]
+  },
+  {
+    "id": "runtime-original",
+    "query": "京东退款里说的原返是什么意思？",
+    "category": "payment_policy",
+    "should_answer": true,
+    "expected_sources": [
+      "jd_refund_policy.md#原返是什么意思"
+    ],
+    "reference_answer": "原返是退回订单原来的支付方式。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "原返"
+    ]
+  },
+  {
+    "id": "runtime-arrival",
+    "query": "京东售后审核通过，是不是就代表退款已经到账？",
+    "category": "payment_policy",
+    "should_answer": true,
+    "expected_sources": [
+      "jd_refund_policy.md#退款到账为什么需要等待"
+    ],
+    "reference_answer": "审核通过不等于到账，总周期包含京东处理和银行处理。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "到账",
+      "审核"
+    ]
+  },
+  {
+    "id": "runtime-price",
+    "query": "我的手机进水维修一定只要200元吗？",
+    "category": "warranty_policy",
+    "should_answer": false,
+    "expected_sources": [],
+    "reference_answer": "根据现有知识库无法确定具体维修价格。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "进水",
+      "维修"
+    ]
+  },
+  {
+    "id": "runtime-status",
+    "query": "我的退款今天下午三点能到账吗？",
+    "category": "payment_policy",
+    "should_answer": false,
+    "expected_sources": [],
+    "reference_answer": "根据现有知识库无法确定这笔退款的具体到账时间。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": "search_knowledge",
+    "parameter_terms": [
+      "退款",
+      "到账"
+    ]
+  },
+  {
+    "id": "runtime-greeting",
+    "query": "你好",
+    "category": "product_guide",
+    "should_answer": true,
+    "expected_sources": [],
+    "reference_answer": "友好回应问候，不需要查询知识库。",
+    "review_status": "developer_authored_smoke",
+    "expected_tool": null,
+    "parameter_terms": []
+  }
+]
