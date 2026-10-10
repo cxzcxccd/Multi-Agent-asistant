@@ -157,3 +157,37 @@ def test_no_model_response_is_not_a_correct_no_tool_decision():
     result = run_case(Client(), object(), case)
     assert result["tool_selection_correct"] is None
     assert result["task_passed"] is False
+
+
+def test_unnecessary_tool_call_still_has_parameter_result(monkeypatch):
+    from app.modules.knowledge.schemas import AnswerQualityScores
+
+    class Client:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(content="", tool_calls=[{
+                    "id": "call-one", "name": "search_knowledge", "args": {"query": "退款渠道"},
+                }])
+            return AIMessage(content="无法确定")
+
+    class Judge:
+        def judge(self, *arguments):
+            return AnswerQualityScores(correctness=1, faithfulness=1, completeness=1)
+
+    class Tool:
+        def invoke(self, arguments):
+            return {"sources": [], "error": {"code": "NO_KNOWLEDGE"}}
+
+    monkeypatch.setattr("scripts.evaluate_rag_runtime.search_knowledge", Tool())
+    case = {
+        "id": "one", "query": "退款渠道", "expected_tool": None,
+        "parameter_terms": ["退款"], "reference_answer": "无法确定",
+    }
+    result = run_case(Client(), Judge(), case)
+    assert result["tool_selection_correct"] is False
+    assert result["parameters_correct"] is True
+    assert result["task_passed"] is False

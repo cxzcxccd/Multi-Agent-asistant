@@ -224,4 +224,4 @@ Milvus Lite，本项目使用 Docker Desktop 启动 Milvus Standalone；生产�
 `MILVUS_URI` 和 `MILVUS_TOKEN`，连接 Milvus 集群或 Zilliz Cloud。
 
 
-原100条JDDC阶段测试集的当前知识库实验进度见 [阶段报告](docs/jddc-current-100-evaluation.md)：100条检索已完成，模型在线部分因余额不足待续跑；不能把7条诊断实验或11条有效回答当作100条完整成绩。
+原100条JDDC阶段测试集的当前知识库实验进度见 [阶段报告](docs/jddc-current-100-evaluation.md)：100条真实检索、在线回答与评审均已完成。受控知识工具实验中，工具选择45/100、参数16/87、严格任务13/100，端到端P95为7.73秒；完整记录与失败轮次已归档。金额单价未提供，费用保持null。这不是完整多Agent评测，候选标签仍需人工复核。

@@ -146,11 +146,12 @@ def run_case(client, judge, case: dict) -> dict:
         for call in calls:
             if call["name"] != case["expected_tool"]:
                 selection_correct = False
-        if calls:
-            parameters_correct = True
-            for call in calls:
-                if not call["parameters_correct"]:
-                    parameters_correct = False
+    # 参数质量与工具选择分别统计：误调用的工具也必须纳入参数分母。
+    if calls:
+        parameters_correct = True
+        for call in calls:
+            if not call["parameters_correct"]:
+                parameters_correct = False
     if not usage_records:
         # 模型没有返回任何响应，不能把“没调用工具”算作正确选择。
         selection_correct = None
