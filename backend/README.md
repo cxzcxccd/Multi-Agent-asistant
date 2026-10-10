@@ -640,3 +640,23 @@ ORDER_MCP_URL=http://127.0.0.1:8000/orders-mcp/
 新增 `scripts.evaluate_rag_runtime`：真实模型自主选择 `search_knowledge`，执行工具并生成答案，统计工具选择、参数契约、回答任务通过率、端到端 P95 和 Token 用量。运行命令、费用定义及样本局限见 [实验说明](../docs/rag-runtime-evaluation.md)。
 
 现有 `scripts.evaluate_rag` 同时记录逐条生成用量、评审/诊断用量、回答任务通过率和检索到答案完成 P95。通过 `--input-price-per-million`、`--output-price-per-million`、`--cost-currency` 输入实际单价；价格缺失或用量不完整时费用为 null。对比入口暂不接受价格参数，需要逐方案运行。费用为未考虑缓存折扣的模型用量估算，不是账单，也不是完整会话成本。
+
+
+### 原 JDDC 100 条阶段测试集
+
+先更新当前知识库标签，保留原测试 Query：
+
+```powershell
+python -m scripts.prepare_jddc_runtime_test --batch-size 5 --workers 4 --model-timeout 90
+```
+
+标注输出为 `data/evaluation/jddc_test_current_100.json`，支持续跑，标签是两遍模型核验候选，不是人工金标准。`--model-timeout` 仅覆盖实验客户端，不修改线上配置。工具标签不输入生成模型；原业务分类也不能直接用作参数正确性的金标准。
+
+再分别运行直接检索与模型自主工具调用：
+
+```powershell
+python -m scripts.evaluate_rag --retrieval-only --cases data/evaluation/jddc_test_current_100.json --limit 5 --output data/evaluation/results/jddc-current-100-retrieval
+python -m scripts.evaluate_rag_runtime --cases data/evaluation/jddc_test_current_100.json --workers 4 --output data/evaluation/results/jddc-current-100-runtime
+```
+
+默认使用真实BGE与Milvus；默认不把标签分类作为直接检索过滤条件。运行指标的P95必须同时注明workers，模型参数语义评审不计入在线耗时，评审失败单独报告并计任务未通过。新的参数检查允许同义改写与多个合理分类，旧7条词项契约成绩不能直接比较。

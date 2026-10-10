@@ -7,8 +7,10 @@ import math
 import time
 from datetime import UTC, datetime
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -17,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from app.ai.model_client import create_model_client
-from app.ai.tools.knowledge import KnowledgeSearchInput, search_knowledge
+from app.ai.tools.knowledge import KnowledgeSearchInput, search_knowledge, get_knowledge_tool_service
 from app.core.config import settings
 from app.db.base import Base
 from app.modules.knowledge.embeddings import create_embedding_provider
@@ -33,6 +35,28 @@ from app.modules.knowledge.schemas import KnowledgeSearchItem
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
+def configuration_fingerprint() -> str:
+    """只存配置摘要，不记录地址或密钥；防止续跑混用不同模型与检索方案。"""
+    values = {
+        "provider": settings.model_provider,
+        "model": settings.model_name,
+        "base_url": settings.model_base_url,
+        "temperature": settings.model_temperature,
+        "timeout": settings.model_timeout_seconds,
+        "embedding": settings.embedding_model,
+        "vector_min": settings.knowledge_min_score,
+        "bm25_min": settings.knowledge_bm25_min_score,
+        "bm25_k1": settings.knowledge_bm25_k1,
+        "bm25_b": settings.knowledge_bm25_b,
+        "rrf": settings.knowledge_rrf_rank_constant,
+        "hnsw_m": settings.milvus_hnsw_m,
+        "hnsw_construction": settings.milvus_hnsw_ef_construction,
+        "hnsw_ef": settings.milvus_hnsw_ef,
+    }
+    serialized = json.dumps(values, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
 def validate_parameters(arguments: dict, case: dict) -> bool:
     """检查结构、问题关键事实和分类；这是受控样本契约，不是通用语义评审。"""
     try:
@@ -40,7 +64,12 @@ def validate_parameters(arguments: dict, case: dict) -> bool:
     except ValueError:
         return False
     if parsed.category is not None and parsed.category != case["category"]:
-        return False
+        if parsed.category not in case.get("allowed_categories", []):
+            return False
+    if case.get("parameter_check") == "semantic":
+        if parsed.category is not None and parsed.category not in case["allowed_categories"]:
+            return False
+        return True
     for term in case["parameter_terms"]:
         if term in parsed.query:
             return True
@@ -63,6 +92,7 @@ def run_case(client, judge, case: dict) -> dict:
     retrieval_latencies = []
     answer = None
     error = None
+    model_failure = None
     selection_correct = False
     parameters_correct = None
     try:
@@ -72,6 +102,8 @@ def run_case(client, judge, case: dict) -> dict:
             usage = getattr(response, "usage_metadata", None)
             usage_records.append(dict(usage) if usage else None)
             messages.append(response)
+            if response.invalid_tool_calls:
+                raise ValueError("模型返回无法解析的工具调用参数")
             if not response.tool_calls:
                 answer = ModelRagAnswerEngine._message_text(response.content)
                 break
@@ -100,6 +132,12 @@ def run_case(client, judge, case: dict) -> dict:
             raise RuntimeError("超过四次模型调用仍未完成回答")
     except Exception as exc:
         error = type(exc).__name__ + ": " + str(exc)
+        cause = exc.__cause__
+        status = getattr(cause, "status_code", None)
+        if status is not None:
+            model_failure = {"http_status": status}
+            if status == 402:
+                model_failure["reason"] = "provider_balance_insufficient"
     elapsed = (time.perf_counter() - started) * 1000
     if case["expected_tool"] is None:
         selection_correct = not calls
@@ -113,8 +151,41 @@ def run_case(client, judge, case: dict) -> dict:
             for call in calls:
                 if not call["parameters_correct"]:
                     parameters_correct = False
+    if not usage_records:
+        # 模型没有返回任何响应，不能把“没调用工具”算作正确选择。
+        selection_correct = None
     quality = None
     evaluation_error = None
+    parameter_review = None
+    if calls and case.get("parameter_check") == "semantic":
+        try:
+            review_calls = []
+            for call in calls:
+                # 不把本地契约检查结果透露给语义评审，避免诱导结论。
+                review_calls.append({"name": call["name"], "args": call["args"]})
+            review_messages = [
+                SystemMessage(content=(
+                    "审核知识检索工具的query参数是否忠于用户原问题。允许简化、同义改写、补足明确语义；"
+                    "不得增加未提供的订单编号、商品型号、价格、平台或其他具体事实，也不能丢失核心诉求。"
+                    "逐项输出JSON对象：{\"valid\":[true,false],\"reason\":\"原因\"}，valid顺序与调用列表一致。"
+                    "只审核query，不审核工具选择或检索结果，不能因为没有答案判参数错误。"
+                )),
+                HumanMessage(content=json.dumps({"query": case["query"], "calls": review_calls}, ensure_ascii=False)),
+            ]
+            review_response = judge.model_client.invoke(review_messages)
+            parameter_review = ModelRagAnswerEngine._parse_json_object(str(review_response.content))
+            flags = parameter_review["valid"]
+            if len(flags) != len(calls):
+                raise ValueError("参数评审数量不一致")
+            for call, flag in zip(calls, flags, strict=True):
+                if not isinstance(flag, bool):
+                    raise ValueError("参数评审必须返回布尔值")
+                call["parameters_correct"] = call["parameters_correct"] and flag
+                if not call["parameters_correct"]:
+                    parameters_correct = False
+        except Exception as exc:
+            evaluation_error = "parameter_review: " + type(exc).__name__ + ": " + str(exc)
+            parameters_correct = None
     if answer is not None:
         try:
             quality = judge.judge(case["query"], case["reference_answer"], contexts, answer)
@@ -123,7 +194,7 @@ def run_case(client, judge, case: dict) -> dict:
     task_passed = False
     if quality is not None:
         task_passed = (
-            error is None and selection_correct and parameters_correct is not False
+            error is None and evaluation_error is None and selection_correct and parameters_correct is not False
             and RagEvaluator._answer_passed(quality)
         )
     source_ids = []
@@ -139,7 +210,9 @@ def run_case(client, judge, case: dict) -> dict:
         "usage": RagEvaluator._sum_usage(usage_records),
         "answer": answer, "sources": source_ids,
         "quality": quality.model_dump() if quality is not None else None,
+        "parameter_review": parameter_review,
         "error": error, "evaluation_error": evaluation_error,
+        "model_failure": model_failure,
     }
 
 
@@ -151,7 +224,11 @@ def main() -> None:
     parser.add_argument("--input-price-per-million", type=float)
     parser.add_argument("--output-price-per-million", type=float)
     parser.add_argument("--cost-currency", default="CNY")
+    parser.add_argument("--workers", type=int, default=1, help="并发样本数，延迟报告必须注明负载")
+    parser.add_argument("--resume", action="store_true", help="保留已完成样本，重试运行失败或评审失败；失败历史不覆盖")
     arguments = parser.parse_args()
+    if arguments.workers < 1 or arguments.workers > 8:
+        parser.error("并发样本数须在1到8之间")
     prices = (arguments.input_price_per_million, arguments.output_price_per_million)
     if (prices[0] is None) != (prices[1] is None):
         parser.error("输入与输出单价必须同时提供")
@@ -159,12 +236,64 @@ def main() -> None:
         if price is not None and (not math.isfinite(price) or price < 0):
             parser.error("价格必须是有限的非负数")
     cases = json.loads(arguments.cases.read_text(encoding="utf-8"))
-    client = create_model_client(tools=[search_knowledge])
-    judge = ModelRagAnswerEngine(create_model_client(tools=[]))
+    if not cases:
+        parser.error("评测集不能为空")
+    for case in cases:
+        if "expected_tool" not in case:
+            parser.error("数据缺少工具标签；原JDDC测试集需先运行 scripts.prepare_jddc_runtime_test，不可直接复用旧来源标签")
+    def evaluate_case(case):
+        # 每个样本独立客户端与评审状态，避免并发共享usage_records。
+        client = create_model_client(tools=[search_knowledge])
+        judge = ModelRagAnswerEngine(create_model_client(tools=[]))
+        result = run_case(client, judge, case)
+        failure = result.get("model_failure")
+        if failure and failure.get("http_status") == 402:
+            provider_blocked.set()
+        return result
+    provider_blocked = Event()
     results = []
     arguments.output.mkdir(parents=True, exist_ok=True)
     detail_path = arguments.output / "runtime_results.jsonl"
+    previous_results = {}
+    if arguments.resume and detail_path.exists():
+        report_path = arguments.output / "runtime_report.json"
+        if not report_path.exists():
+            parser.error("续跑需要原报告，用于核对数据与模型配置")
+        previous_report = json.loads(report_path.read_text(encoding="utf-8"))
+        if previous_report["cases_sha256"] != hashlib.sha256(arguments.cases.read_bytes()).hexdigest():
+            parser.error("评测数据已变化，不能续跑")
+        if previous_report["model"] != settings.model_name:
+            parser.error("模型已变化，请使用新输出目录，不能混合成绩")
+        if previous_report.get("workers", 1) != arguments.workers:
+            parser.error("并发条件已变化，请使用新输出目录，不能混合延迟")
+        if previous_report.get("configuration_fingerprint") != configuration_fingerprint():
+            parser.error("模型或检索配置已变化，请使用新输出目录")
+        # 先归档整个失败轮次，避免重试掩盖原始运行错误。
+        archive = arguments.output / ("attempt-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f"))
+        archive.mkdir()
+        (archive / detail_path.name).write_bytes(detail_path.read_bytes())
+        (archive / report_path.name).write_bytes(report_path.read_bytes())
+        for line in detail_path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            if record["error"] is None and record["evaluation_error"] is None:
+                previous_results[record["id"]] = record
+    def evaluate_or_reuse(case):
+        if case["id"] in previous_results:
+            return previous_results[case["id"]]
+        if provider_blocked.is_set():
+            # 已知余额不足时不继续消耗重试；保留样本，恢复后仍可续跑。
+            return {
+                "id": case["id"], "query": case["query"], "calls": [],
+                "tool_selection_correct": None, "parameters_correct": None,
+                "task_passed": False, "end_to_end_latency_ms": 0,
+                "retrieval_latencies_ms": [], "usage": None, "answer": None,
+                "sources": [], "quality": None, "parameter_review": None,
+                "error": "Skipped: provider balance insufficient", "evaluation_error": None,
+                "model_failure": {"http_status": 402, "reason": "skipped_after_provider_balance_failure"},
+            }
+        return evaluate_case(case)
     with TemporaryDirectory() as temporary_directory:
+        initialization_started = time.perf_counter()
         service_context = nullcontext()
         engine = None
         if arguments.in_memory:
@@ -178,25 +307,42 @@ def main() -> None:
             service = KnowledgeService(repository, provider, store)
             # 只替换本次离线实验的存储入口，模型和工具执行均为真实调用。
             service_context = patch("app.ai.tools.knowledge.get_knowledge_tool_service", return_value=service)
+        else:
+            service = get_knowledge_tool_service()
+        # 将索引同步与Embedding首次加载单独记录，不混入请求P95。
+        service.embedding_provider.embed_query("知识检索预热")
+        initialization_ms = (time.perf_counter() - initialization_started) * 1000
         try:
-            with service_context, detail_path.open("w", encoding="utf-8") as output:
-                for case in cases:
-                    result = run_case(client, judge, case)
+            with service_context, detail_path.open("w", encoding="utf-8") as output, ThreadPoolExecutor(max_workers=arguments.workers) as pool:
+                for result in pool.map(evaluate_or_reuse, cases):
                     results.append(result)
                     output.write(json.dumps(result, ensure_ascii=False) + "\n")
                     output.flush()
-                    print(f"{case['id']}: task={result['task_passed']}, error={result['error']}", flush=True)
+                    print(f"{len(results)}/{len(cases)} {result['id']}: task={result['task_passed']}, error={result['error']}", flush=True)
         finally:
             if engine is not None:
                 engine.dispose()
     parameter_cases = []
     latencies = []
     selection_count = 0
+    selection_cases = 0
     success_count = 0
     usage_count = 0
+    evaluation_failures = 0
+    runtime_errors = 0
+    skipped_cases = 0
+    knowledge_required = 0
+    answerable_cases = 0
+    quality_scores = []
     total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     for result in results:
-        selection_count += int(result["tool_selection_correct"])
+        if result["error"] is not None:
+            runtime_errors += 1
+        if result["error"] == "Skipped: provider balance insufficient":
+            skipped_cases += 1
+        if result["tool_selection_correct"] is not None:
+            selection_cases += 1
+            selection_count += int(result["tool_selection_correct"])
         success_count += int(result["task_passed"])
         if result["parameters_correct"] is not None:
             parameter_cases.append(result["parameters_correct"])
@@ -206,9 +352,36 @@ def main() -> None:
             usage_count += 1
             for key in total_usage:
                 total_usage[key] += result["usage"].get(key, 0)
+        if result["evaluation_error"] is not None:
+            evaluation_failures += 1
+        if result["quality"] is not None:
+            quality_scores.append(result["quality"])
+    for case in cases:
+        if case["expected_tool"] == "search_knowledge":
+            knowledge_required += 1
+        if case.get("should_answer"):
+            answerable_cases += 1
+    quality_averages = {}
+    for field in ("correctness", "faithfulness", "completeness", "citation_correctness"):
+        values = []
+        for quality in quality_scores:
+            values.append(quality[field])
+        quality_averages[field] = RagEvaluator._average(values) if values else None
     report = {
         "scope": "单个知识工具的受控真实模型实验，不是完整多Agent或JDDC500评测",
         "model": settings.model_name, "cases": len(results),
+        "workers": arguments.workers,
+        "configuration_fingerprint": configuration_fingerprint(),
+        "reused_cases": len(previous_results),
+        "initialization_ms": round(initialization_ms, 2),
+        "expected_knowledge_tool_cases": knowledge_required,
+        "answerable_cases": answerable_cases,
+        "unanswerable_cases": len(cases) - answerable_cases,
+        "evaluation_failure_cases": evaluation_failures,
+        "runtime_error_cases": runtime_errors,
+        "skipped_cases": skipped_cases,
+        "quality_cases": len(quality_scores),
+        "quality_averages": quality_averages,
         "created_at": datetime.now(UTC).isoformat(),
         "cases_sha256": hashlib.sha256(arguments.cases.read_bytes()).hexdigest(),
         "embedding_model": settings.embedding_model,
@@ -216,12 +389,16 @@ def main() -> None:
         "vector_min_score": settings.knowledge_min_score,
         "bm25_min_score": settings.knowledge_bm25_min_score,
         "rrf_rank_constant": settings.knowledge_rrf_rank_constant,
+        "hnsw_m": settings.milvus_hnsw_m,
+        "hnsw_ef_construction": settings.milvus_hnsw_ef_construction,
+        "hnsw_ef": settings.milvus_hnsw_ef,
         "retrieval_backend": "真实BGE+内存余弦" if arguments.in_memory else "真实BGE+Milvus",
         "tool_selection_correct": selection_count,
-        "tool_selection_accuracy": selection_count / len(results),
+        "tool_selection_cases": selection_cases,
+        "tool_selection_accuracy": selection_count / selection_cases if selection_cases else None,
         "parameter_valid_cases": sum(parameter_cases), "parameter_cases": len(parameter_cases),
         "parameter_accuracy": sum(parameter_cases) / len(parameter_cases) if parameter_cases else None,
-        "parameter_definition": "Pydantic结构合法、分类一致、保留至少一个人工指定关键事实词；逐任务所有调用通过",
+        "parameter_definition": "结构合法、类别在允许集合内、query保持用户事实与诉求（semantic样本由模型核验；旧smoke样本检查关键事实词）；逐任务所有调用通过",
         "task_successes": success_count, "task_completion_rate": success_count / len(results),
         "task_definition": "调用无错误、工具选择正确、参数契约通过、模型评审三项分数均>=0.7；含正确拒答与问候",
         "end_to_end_p95_ms": RagEvaluator._percentile(latencies, 0.95) if latencies else None,

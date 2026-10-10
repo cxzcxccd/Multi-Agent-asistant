@@ -123,6 +123,7 @@ npm run format:check
 - Milvus 向量字段显式使用 HNSW + COSINE，默认建图参数 M=16、efConstruction=200，搜索 ef=64。已有相同维度集合自动重建向量索引，保留数据；参数和迁移说明见后端 README。
 - JDDC 500条阶段评测、数据局限和后续校准计划记录在`docs/rag-evaluation-report.md`。
 - 新增 RAG 运行指标：回答任务通过率、检索到答案完成 P95、生成/评审 Token 分账及显式价格费用估算；知识工具选择和参数契约受控实验见 `docs/rag-runtime-evaluation.md`，不等同完整多 Agent 评测。
+- JDDC 原100条阶段测试Query可通过 `scripts.prepare_jddc_runtime_test` 对当前知识库重新核验来源和工具标签，再运行真实Milvus的检索及工具运行实验；保留原ID和顺序，不替换测试问题。
 - Milvus 使用 COSINE 相似度执行向量召回，SQLite 只保存知识正文和版本信息；商品及订单工具已接入 MCP Streamable HTTP；订单使用短期内部凭证隔离买家身份，售后和知识工具仍在本地执行。
 - 185 项后端测试，包含任务拆解、并行／顺序执行、汇总 Agent、Checkpoint 恢复、售后确认并发控制、运行记录持久化和跨领域工具越权拦截。
 
@@ -221,3 +222,6 @@ SQLite、SQLAlchemy 和 Alembic 数据库基础已经完成，商品、会话、
 知识正文和内容哈希保存在关系数据库中，知识向量保存在 Milvus。Windows 不支持原生
 Milvus Lite，本项目使用 Docker Desktop 启动 Milvus Standalone；生产环境可以只修改
 `MILVUS_URI` 和 `MILVUS_TOKEN`，连接 Milvus 集群或 Zilliz Cloud。
+
+
+原100条JDDC阶段测试集的当前知识库实验进度见 [阶段报告](docs/jddc-current-100-evaluation.md)：100条检索已完成，模型在线部分因余额不足待续跑；不能把7条诊断实验或11条有效回答当作100条完整成绩。
