@@ -5,7 +5,7 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/
   '',
 );
 
-type AuthIdentity = { role: 'buyer'; buyerId: BuyerId } | { role: 'staff' };
+type AuthIdentity = { role: 'buyer'; buyerId: BuyerId } | { role: 'staff' } | { role: 'admin' };
 
 export async function buyerPreferences(buyerId: BuyerId, content?: string): Promise<string> {
   const init: RequestInit = { method: 'GET' };
@@ -696,6 +696,35 @@ export async function getProducts(
   return (await response.json()) as ProductListResponse;
 }
 
+/**
+ * 按后端允许的最大页大小读取全部商品。
+ *
+ * 管理页需要展示完整目录，但商品列表接口单页最多返回 50 条，
+ * 因此不能通过放大 limit 绕过分页限制。
+ */
+export async function getAllProducts(signal?: AbortSignal): Promise<Product[]> {
+  const pageSize = 50;
+  const products: Product[] = [];
+  let offset = 0;
+  let total = 0;
+
+  do {
+    const page = await getProducts({ offset, limit: pageSize }, signal);
+    total = page.total;
+
+    for (const product of page.items) {
+      products.push(product);
+    }
+
+    if (page.items.length === 0) {
+      break;
+    }
+    offset += page.items.length;
+  } while (products.length < total);
+
+  return products;
+}
+
 export async function getProductDetail(productId: string, signal?: AbortSignal): Promise<Product> {
   const encodedProductId = encodeURIComponent(productId);
   const response = await fetch(`${apiBaseUrl}/products/${encodedProductId}`, { signal });
@@ -705,6 +734,74 @@ export async function getProductDetail(productId: string, signal?: AbortSignal):
   }
 
   return (await response.json()) as Product;
+}
+
+export interface ProductCreatePayload {
+  name: string;
+  category: Category;
+  series: string;
+  price: number;
+  stock: number;
+  specs: string[];
+  description: string;
+  color: string;
+  source?: string;
+}
+
+export type ProductUpdatePayload = Partial<Omit<ProductCreatePayload, 'stock'>>;
+
+export type StockOperation = 'set' | 'add' | 'subtract';
+
+async function writeProduct(path: string, method: string, body: unknown): Promise<Product> {
+  const response = await authenticatedFetch(
+    path,
+    {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    { role: 'admin' },
+  );
+
+  if (!response.ok) {
+    throw await readCatalogError(response);
+  }
+
+  return (await response.json()) as Product;
+}
+
+export async function createProduct(payload: ProductCreatePayload): Promise<Product> {
+  return writeProduct(`${apiBaseUrl}/products`, 'POST', payload);
+}
+
+export async function updateProduct(
+  productId: string,
+  payload: ProductUpdatePayload,
+): Promise<Product> {
+  return writeProduct(`${apiBaseUrl}/products/${encodeURIComponent(productId)}`, 'PATCH', payload);
+}
+
+export async function adjustStock(
+  productId: string,
+  operation: StockOperation,
+  quantity: number,
+): Promise<Product> {
+  return writeProduct(`${apiBaseUrl}/products/${encodeURIComponent(productId)}/stock`, 'PATCH', {
+    operation,
+    quantity,
+  });
+}
+
+export async function deleteProduct(productId: string): Promise<void> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/products/${encodeURIComponent(productId)}`,
+    { method: 'DELETE' },
+    { role: 'admin' },
+  );
+
+  if (!response.ok) {
+    throw await readCatalogError(response);
+  }
 }
 
 export async function sendChatMessage(

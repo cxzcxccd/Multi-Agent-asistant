@@ -5,16 +5,25 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
+from app.modules.auth.dependencies import AdminPrincipal
 from app.modules.catalog.schemas import (
     Product,
+    ProductCreate,
     ProductId,
     ProductListResponse,
     ProductSearchParams,
+    ProductUpdate,
+    StockAdjustment,
 )
 from app.db.initialize import initialize_database
 from app.db.session import get_session_factory
 from app.modules.catalog.repository import SqlProductRepository
-from app.modules.catalog.service import ProductNotFoundError, ProductService
+from app.modules.catalog.service import (
+    InsufficientStockError,
+    ProductAlreadyExistsError,
+    ProductNotFoundError,
+    ProductService,
+)
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -55,6 +64,101 @@ async def get_product(
 
     try:
         return service.get_product(product_id)
+    except ProductNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "",
+    response_model=Product,
+    status_code=status.HTTP_201_CREATED,
+    summary="新增商品",
+)
+async def create_product(
+    payload: ProductCreate,
+    _admin: AdminPrincipal,
+    service: ProductServiceDependency,
+) -> Product:
+    """管理员新增一件商品，编号由系统自动分配。"""
+
+    try:
+        return service.create_product(payload)
+    except ProductAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/{product_id}/stock",
+    response_model=Product,
+    responses={status.HTTP_404_NOT_FOUND: {"description": "商品不存在"}},
+    summary="调整商品库存",
+)
+async def adjust_product_stock(
+    product_id: Annotated[ProductId, Path(description="商品编号，例如 p01")],
+    payload: StockAdjustment,
+    _admin: AdminPrincipal,
+    service: ProductServiceDependency,
+) -> Product:
+    """管理员盘点（set）、入库（add）或出库（subtract）。"""
+
+    try:
+        return service.adjust_stock(product_id, payload)
+    except ProductNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InsufficientStockError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/{product_id}",
+    response_model=Product,
+    responses={status.HTTP_404_NOT_FOUND: {"description": "商品不存在"}},
+    summary="更新商品信息",
+)
+async def update_product(
+    product_id: Annotated[ProductId, Path(description="商品编号，例如 p01")],
+    payload: ProductUpdate,
+    _admin: AdminPrincipal,
+    service: ProductServiceDependency,
+) -> Product:
+    """管理员部分更新商品字段。"""
+
+    try:
+        return service.update_product(product_id, payload)
+    except ProductNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.delete(
+    "/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={status.HTTP_404_NOT_FOUND: {"description": "商品不存在"}},
+    summary="删除商品",
+)
+async def delete_product(
+    product_id: Annotated[ProductId, Path(description="商品编号，例如 p01")],
+    _admin: AdminPrincipal,
+    service: ProductServiceDependency,
+) -> None:
+    """管理员删除一件商品。"""
+
+    try:
+        service.delete_product(product_id)
     except ProductNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

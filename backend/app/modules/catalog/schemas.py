@@ -79,3 +79,66 @@ class ProductListResponse(BaseModel):
         if self.total < len(self.items):
             raise ValueError("total cannot be smaller than the number of returned items")
         return self
+
+
+class ProductCreate(BaseModel):
+    """管理员创建商品的请求；编号由系统自动分配。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: NonBlankText
+    category: ProductCategory
+    series: NonBlankText
+    price: int = Field(ge=0, description="价格，单位为人民币元")
+    stock: int = Field(ge=0, description="初始库存数量")
+    specs: list[NonBlankText] = Field(min_length=1)
+    description: NonBlankText
+    color: NonBlankText
+    source: NonBlankText = Field(default="手动录入")
+
+
+class ProductUpdate(BaseModel):
+    """管理员部分更新商品资料；库存必须通过专用接口调整。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: NonBlankText | None = None
+    category: ProductCategory | None = None
+    series: NonBlankText | None = None
+    price: int | None = Field(default=None, ge=0)
+    specs: list[NonBlankText] | None = Field(default=None, min_length=1)
+    description: NonBlankText | None = None
+    color: NonBlankText | None = None
+    source: NonBlankText | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_empty_or_null_update(cls, data: object) -> object:
+        """拒绝没有修改内容的请求，也不允许把必填字段显式设为空。"""
+
+        if not isinstance(data, dict):
+            return data
+        if not data:
+            raise ValueError("至少需要提供一个待更新字段")
+
+        null_fields: list[str] = []
+        for field_name, value in data.items():
+            if value is None:
+                null_fields.append(field_name)
+        if null_fields:
+            field_names = "、".join(null_fields)
+            raise ValueError(f"商品字段不能设为 null：{field_names}")
+        return data
+
+
+# 库存调整方式：设为绝对值、入库增加、出库扣减。
+StockOperation = Literal["set", "add", "subtract"]
+
+
+class StockAdjustment(BaseModel):
+    """库存盘点、入库或出库的请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: StockOperation
+    quantity: int = Field(ge=0, description="数量必须为非负整数")

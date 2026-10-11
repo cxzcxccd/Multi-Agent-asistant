@@ -1,17 +1,22 @@
 """从本地模拟数据文件读取商品。"""
 
 import json
+import re
 from functools import cached_property
 from json import JSONDecodeError
 from pathlib import Path
 from collections.abc import Callable
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.catalog.models import ProductRecord
-from app.modules.catalog.schemas import Product
+from app.modules.catalog.schemas import (
+    Product,
+    StockOperation,
+)
 
 DEFAULT_PRODUCTS_PATH = (
     Path(__file__).resolve().parents[3] / "data" / "seed" / "products.json"
@@ -20,6 +25,22 @@ DEFAULT_PRODUCTS_PATH = (
 
 class ProductDataError(RuntimeError):
     """商品数据文件无法读取或未通过校验。"""
+
+
+class ProductAlreadyExistsError(ProductDataError):
+    """待创建的商品编号已存在。"""
+
+
+class InsufficientStockError(ProductDataError):
+    """出库数量超过当前库存，会导致负库存。"""
+
+    def __init__(self, product_id: str, current_stock: int, requested: int) -> None:
+        self.product_id = product_id
+        self.current_stock = current_stock
+        self.requested = requested
+        super().__init__(
+            f"商品 {product_id} 库存不足：当前 {current_stock}，请求扣减 {requested}"
+        )
 
 
 class ProductRepository:
@@ -120,3 +141,125 @@ class SqlProductRepository:
             color=record.color,
             source=record.source,
         )
+
+    def exists(self, product_id: str) -> bool:
+        """判断商品编号是否已存在。"""
+
+        with self._session_factory() as session:
+            return session.get(ProductRecord, product_id) is not None
+
+    def next_product_id(self) -> str:
+        """按现有最大编号分配下一个 pNN 编号。"""
+
+        with self._session_factory() as session:
+            product_ids = session.scalars(select(ProductRecord.id)).all()
+
+        highest = 0
+        for product_id in product_ids:
+            match = re.fullmatch(r"p(\d{2})", product_id)
+            if match is not None:
+                highest = max(highest, int(match.group(1)))
+        if highest >= 99:
+            raise ProductDataError("商品编号已达 p99 上限，无法继续自动分配")
+        return f"p{highest + 1:02d}"
+
+    def insert(self, product: Product) -> Product:
+        """插入新商品；编号冲突时抛出异常并回滚。"""
+
+        with self._session_factory() as session:
+            record = ProductRecord(
+                id=product.id,
+                name=product.name,
+                category=product.category.value,
+                series=product.series,
+                price=product.price,
+                stock=product.stock,
+                specs=list(product.specs),
+                description=product.description,
+                color=product.color,
+                source=product.source,
+            )
+            session.add(record)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                raise ProductAlreadyExistsError(
+                    f"商品编号已存在：{product.id}"
+                ) from exc
+            session.refresh(record)
+            return self._to_schema(record)
+
+    def update_fields(
+        self, product_id: str, changes: dict[str, object]
+    ) -> Product | None:
+        """按字段部分更新；商品不存在时返回空值。"""
+
+        with self._session_factory() as session:
+            record = session.get(ProductRecord, product_id)
+            if record is None:
+                return None
+            for key, value in changes.items():
+                if key == "category" and hasattr(value, "value"):
+                    value = value.value
+                if key == "specs" and value is not None:
+                    value = list(value)
+                setattr(record, key, value)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                raise ProductDataError(f"商品更新失败：{product_id}") from exc
+            session.refresh(record)
+            return self._to_schema(record)
+
+    def adjust_stock(
+        self, product_id: str, operation: StockOperation, quantity: int
+    ) -> Product:
+        """使用数据库原子更新盘点、入库或出库，并阻止负库存。"""
+
+        with self._session_factory() as session:
+            if operation == "set":
+                statement = (
+                    update(ProductRecord)
+                    .where(ProductRecord.id == product_id)
+                    .values(stock=quantity)
+                )
+            elif operation == "add":
+                statement = (
+                    update(ProductRecord)
+                    .where(ProductRecord.id == product_id)
+                    .values(stock=ProductRecord.stock + quantity)
+                )
+            else:
+                statement = (
+                    update(ProductRecord)
+                    .where(ProductRecord.id == product_id)
+                    .where(ProductRecord.stock >= quantity)
+                    .values(stock=ProductRecord.stock - quantity)
+                )
+
+            result = session.execute(statement)
+            if result.rowcount == 0:
+                record = session.get(ProductRecord, product_id)
+                if record is None:
+                    raise LookupError(f"未找到商品：{product_id}")
+                raise InsufficientStockError(product_id, record.stock, quantity)
+
+            session.commit()
+            record = session.get(ProductRecord, product_id)
+            if record is None:
+                raise LookupError(f"未找到商品：{product_id}")
+            session.refresh(record)
+            return self._to_schema(record)
+
+    def delete(self, product_id: str) -> bool:
+        """删除商品；商品不存在时返回 False。"""
+
+        with self._session_factory() as session:
+            record = session.get(ProductRecord, product_id)
+            if record is None:
+                return False
+            session.delete(record)
+            session.commit()
+            return True

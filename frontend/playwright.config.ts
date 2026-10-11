@@ -17,12 +17,12 @@ export default defineConfig({
   projects: [
     {
       name: 'script-demo',
-      testIgnore: 'backend-chat.spec.ts',
+      testIgnore: ['backend-chat.spec.ts', 'admin.spec.ts'],
       use: { baseURL: 'http://127.0.0.1:5174' },
     },
     {
       name: 'backend-chat',
-      testMatch: 'backend-chat.spec.ts',
+      testMatch: ['backend-chat.spec.ts', 'admin.spec.ts'],
       use: { baseURL: 'http://127.0.0.1:5175' },
     },
   ],

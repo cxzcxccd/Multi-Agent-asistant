@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowUpRight,
+  Boxes,
   ChevronDown,
   Command,
   FlaskConical,
@@ -28,6 +29,7 @@ import Chat from './Chat';
 import Workbench from './Workbench';
 import Lab from './Lab';
 import Shop from './Shop';
+import Admin from './Admin';
 import type { BuyerId, View } from './types';
 import { getAuthSession, logoutAccount } from './api';
 import type { AuthSession } from './api';
@@ -35,12 +37,15 @@ import Login from './Login';
 
 const readView = (): View => {
   const hash = location.hash.slice(1);
-  return hash === 'workbench' || hash === 'lab' || hash === 'shop' ? hash : 'chat';
+  return hash === 'workbench' || hash === 'lab' || hash === 'shop' || hash === 'admin'
+    ? hash
+    : 'chat';
 };
 const views = [
   { id: 'chat' as const, name: '买家客服', subtitle: '和小极聊聊', icon: MessageSquare },
   { id: 'workbench' as const, name: '客服工作台', subtitle: '人工服务与审核', icon: Headphones },
   { id: 'lab' as const, name: '开发者与评测', subtitle: '执行记录与实验', icon: FlaskConical },
+  { id: 'admin' as const, name: '商品管理', subtitle: '商品与库存维护', icon: Boxes },
 ];
 export default function App() {
   const s = useDemo(),
@@ -69,10 +74,17 @@ export default function App() {
     if (!backendChatEnabled || auth === null) return;
     if (auth.principal.role === 'buyer' && auth.principal.buyer_id) {
       switchBuyer(auth.principal.buyer_id);
-      if (view === 'workbench' || view === 'lab') navigate('chat');
     }
-    if (auth.principal.role === 'staff' && view === 'chat') navigate('workbench');
   }, [auth?.principal.subject]);
+  useEffect(() => {
+    if (!backendChatEnabled || auth === null) return;
+    const role = auth.principal.role;
+    if (role === 'buyer' && view !== 'chat' && view !== 'shop') {
+      navigate('chat');
+    } else if (role === 'staff' && (view === 'chat' || view === 'admin')) {
+      navigate('workbench');
+    }
+  }, [auth, view]);
   const navigate = (next: View) => {
     markVisited(next);
     location.hash = next;
@@ -86,7 +98,7 @@ export default function App() {
           auth.principal.role === 'admin'
             ? true
             : auth.principal.role === 'staff'
-              ? item.id !== 'chat'
+              ? item.id !== 'chat' && item.id !== 'admin'
               : item.id === 'chat',
         )
       : views;
@@ -315,6 +327,9 @@ export default function App() {
           </div>
           <div className="route-pane" hidden={view !== 'lab'}>
             {visited.includes('lab') && <Lab />}
+          </div>
+          <div className="route-pane" hidden={view !== 'admin'}>
+            {visited.includes('admin') && <Admin />}
           </div>
           <div className="route-pane" hidden={view !== 'shop'}>
             {visited.includes('shop') && (

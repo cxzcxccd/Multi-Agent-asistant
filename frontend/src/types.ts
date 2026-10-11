@@ -1,5 +1,5 @@
 export type BuyerId = 'A' | 'B';
-export type View = 'chat' | 'workbench' | 'lab' | 'shop';
+export type View = 'chat' | 'workbench' | 'lab' | 'shop' | 'admin';
 export type Category = '耳机' | '充电器' | '扩展坞';
 export interface Product {
   id: string;
