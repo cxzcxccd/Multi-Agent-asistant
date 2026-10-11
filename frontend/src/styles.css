@@ -778,6 +778,103 @@ textarea:focus {
   overflow-wrap: anywhere;
   color: #49566c;
 }
+.markdown-content {
+  white-space: normal;
+  overflow-x: auto;
+}
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-content table {
+  margin: 0 0 0.75em;
+}
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin: 0.85em 0 0.45em;
+  color: #34445f;
+  line-height: 1.45;
+}
+.markdown-content h1 {
+  font-size: 1.25em;
+}
+.markdown-content h2 {
+  font-size: 1.15em;
+}
+.markdown-content h3,
+.markdown-content h4 {
+  font-size: 1.05em;
+}
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.5em;
+}
+.markdown-content li + li {
+  margin-top: 0.25em;
+}
+.markdown-content blockquote {
+  padding: 0.15em 0 0.15em 0.85em;
+  border-left: 3px solid #b8c6ee;
+  color: #64738d;
+}
+.markdown-content a {
+  color: #4263c7;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-content code {
+  padding: 0.15em 0.38em;
+  border: 1px solid #e1e6f0;
+  border-radius: 4px;
+  background: #eef1f7;
+  color: #394963;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.88em;
+}
+.markdown-content pre {
+  overflow-x: auto;
+  padding: 0.85em 1em;
+  border: 1px solid #e1e6f0;
+  border-radius: 8px;
+  background: #edf1f7;
+  line-height: 1.6;
+}
+.markdown-content pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.markdown-content th,
+.markdown-content td {
+  padding: 0.45em 0.65em;
+  border: 1px solid #dfe5f0;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-content th {
+  background: #edf2fa;
+  color: #3d4d68;
+  font-weight: 650;
+}
+.markdown-content hr {
+  margin: 0.9em 0;
+  border: 0;
+  border-top: 1px solid #dfe5ef;
+}
 .from-assistant .message-text {
   background: #f6f8fc;
   border: 1px solid #f0f3f8;

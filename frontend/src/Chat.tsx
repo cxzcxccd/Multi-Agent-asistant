@@ -37,6 +37,7 @@ import {
 import type { Conversation, Message } from './types';
 import { buyerPreferences } from './api';
 import type { BuyerId } from './types';
+import MarkdownMessage from './MarkdownMessage';
 
 function MemoryPreferencesEditor({ buyerId }: { buyerId: BuyerId }) {
   const [open, setOpen] = useState(false);
@@ -267,7 +268,11 @@ function MessageBubble({
           )}
           <time>{timeLabel(m.time)}</time>
         </div>
-        <div className={`message-text ${m.streaming ? 'streaming' : ''}`}>{m.text}</div>
+        <div
+          className={`message-text ${user ? '' : 'markdown-content'} ${m.streaming ? 'streaming' : ''}`}
+        >
+          {user ? m.text : <MarkdownMessage content={m.text} />}
+        </div>
         {m.products?.length ? (
           <div className="product-grid message-products">
             {m.products.map((id) => (

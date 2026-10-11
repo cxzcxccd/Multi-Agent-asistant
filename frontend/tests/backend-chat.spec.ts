@@ -349,6 +349,40 @@ test('你是谁和无商品关键词的追问都调用后端，并沿用会话',
   await expect(log.getByText(/暂未连接真实大模型/)).toHaveCount(0);
 });
 
+test('AI 回复按照 Markdown 渲染标题、列表、表格、代码和链接', async ({ page }) => {
+  const markdown = [
+    '## 推荐结果',
+    '',
+    '- **降噪能力**：支持主动降噪',
+    '- 预算：`300 元`',
+    '',
+    '| 商品 | 价格 |',
+    '| --- | ---: |',
+    '| AirBeat Pro | 299 元 |',
+    '',
+    '```json',
+    '{"product_id":"p01"}',
+    '```',
+    '',
+    '[查看帮助](https://example.com/help)',
+  ].join('\n');
+  await page.route('**/api/chat/stream', async (route) => {
+    await returnReply(route, markdown);
+  });
+
+  await login(page);
+  await send(page, '用 Markdown 推荐一款耳机');
+
+  const log = page.getByRole('log', { name: '聊天记录' });
+  await expect(log.getByRole('heading', { name: '推荐结果', level: 2 })).toBeVisible();
+  await expect(log.getByRole('listitem').filter({ hasText: '降噪能力' })).toBeVisible();
+  await expect(log.getByRole('table')).toContainText('AirBeat Pro');
+  await expect(log.locator('pre code')).toContainText('"product_id":"p01"');
+  const link = log.getByRole('link', { name: '查看帮助' });
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+});
+
 test('商品咨询后的省略主语追问使用同一个后端会话', async ({ page }) => {
   const requests: ChatRequestBody[] = [];
   await page.route('**/api/chat/stream', async (route) => {
