@@ -290,7 +290,7 @@ function mergeConversationSnapshots(remoteConversations: ApiConversation[]) {
 export function subscribeToConversationUpdates(): () => void {
   if (!useBackendChat) return () => {};
   const session = getAuthSession();
-  if (session?.principal.role === 'staff') {
+  if (session?.principal.role === 'staff' || session?.principal.role === 'admin') {
     return subscribeToStaffConversations(mergeConversationSnapshots);
   }
   if (session?.principal.buyer_id) {
@@ -697,6 +697,19 @@ export async function refreshAfterSales(): Promise<void> {
   let remoteRequests: ApiAfterSaleRequest[] = [];
   if (session?.principal.role === 'staff') {
     remoteRequests = await listPendingAfterSales();
+  } else if (session?.principal.role === 'admin') {
+    const pendingRequests = await listPendingAfterSales();
+    const buyerRequests = await listAfterSales(state.buyer);
+    const requestsById = new Map<string, ApiAfterSaleRequest>();
+    for (const request of pendingRequests) {
+      requestsById.set(request.id, request);
+    }
+    for (const request of buyerRequests) {
+      if (request.status !== 'draft') {
+        requestsById.set(request.id, request);
+      }
+    }
+    remoteRequests = Array.from(requestsById.values());
   } else if (session?.principal.buyer_id) {
     const buyerRequests = await listAfterSales(session.principal.buyer_id);
     remoteRequests = buyerRequests.filter((item) => item.status !== 'draft');

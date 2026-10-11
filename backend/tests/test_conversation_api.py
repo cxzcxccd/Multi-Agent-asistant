@@ -31,6 +31,12 @@ STAFF_HEADERS = {
     "Authorization": "Bearer "
     + create_access_token(Principal(subject="staff", display_name="客服小周", role="staff"))
 }
+ADMIN_HEADERS = {
+    "Authorization": "Bearer "
+    + create_access_token(
+        Principal(subject="admin", display_name="平台管理员", role="admin")
+    )
+}
 
 
 class ReplyRuntime:
@@ -217,6 +223,56 @@ def test_handoff_staff_reply_restore_ai_and_close() -> None:
             )
             assert closed.status_code == 200
             assert closed.json()["mode"] == "closed"
+
+    asyncio.run(run_scenario())
+
+
+def test_admin_can_chat_for_selected_buyer_and_take_over_conversation() -> None:
+    async def run_scenario() -> None:
+        async with conversation_client() as (client, _service):
+            buyer_headers = {
+                **ADMIN_HEADERS,
+                "X-Acting-Buyer-ID": "A",
+            }
+            created = await client.post(
+                "/api/chat",
+                json={"buyer_id": "A", "message": "我需要人工帮助"},
+                headers=buyer_headers,
+            )
+            assert created.status_code == 200
+            conversation_id = created.json()["conversation_id"]
+
+            handoff = await client.post(
+                "/api/handoff",
+                json={
+                    "buyer_id": "A",
+                    "conversation_id": conversation_id,
+                    "title": "管理员协助处理",
+                },
+                headers=buyer_headers,
+            )
+            assert handoff.status_code == 200
+            assert handoff.json()["mode"] == "waiting"
+
+            takeover = await client.post(
+                f"/api/staff/conversations/{conversation_id}/mode",
+                json={"staff_id": "不能信任的前端名称", "mode": "human"},
+                headers=ADMIN_HEADERS,
+            )
+            assert takeover.status_code == 200
+            assert takeover.json()["mode"] == "human"
+            assert takeover.json()["messages"][-1]["content"] == (
+                "平台管理员 已接入，会继续为你处理。"
+            )
+
+            reply = await client.post(
+                f"/api/staff/conversations/{conversation_id}/messages",
+                json={"staff_id": "不能信任的前端名称", "message": "我来协助处理。"},
+                headers=ADMIN_HEADERS,
+            )
+            assert reply.status_code == 200
+            assert reply.json()["messages"][-1]["role"] == "staff"
+            assert reply.json()["messages"][-1]["content"] == "我来协助处理。"
 
     asyncio.run(run_scenario())
 

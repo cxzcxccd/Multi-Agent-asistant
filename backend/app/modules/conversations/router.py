@@ -236,7 +236,9 @@ async def stream_conversation_events(
 ) -> StreamingResponse:
     """只在会话快照发生变化时推送，并定期发送心跳。"""
 
-    if user.role != "buyer" or user.buyer_id != buyer_id:
+    buyer_can_subscribe = user.role == "buyer" and user.buyer_id == buyer_id
+    admin_can_subscribe = user.role == "admin"
+    if not buyer_can_subscribe and not admin_can_subscribe:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权订阅该买家的会话")
 
     async def event_source() -> AsyncIterator[str]:
@@ -284,8 +286,8 @@ async def stream_staff_conversation_events(
 ) -> StreamingResponse:
     """使用客服令牌推送工作台所需的全部会话快照。"""
 
-    if user.role != "staff":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要客服身份")
+    if user.role not in {"staff", "admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要客服或管理员身份")
 
     async def event_source() -> AsyncIterator[str]:
         previous_version = ""

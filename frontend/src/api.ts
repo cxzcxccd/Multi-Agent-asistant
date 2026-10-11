@@ -26,7 +26,7 @@ export async function buyerPreferences(buyerId: BuyerId, content?: string): Prom
 export interface AuthPrincipal {
   subject: string;
   display_name: string;
-  role: 'buyer' | 'staff';
+  role: 'buyer' | 'staff' | 'admin';
   buyer_id: BuyerId | null;
 }
 
@@ -104,6 +104,9 @@ function requireSession(identity: AuthIdentity): AuthSession {
     throw new ChatApiError('登录状态已失效，请重新登录', 401);
   }
   const principal = authSession.principal;
+  if (principal.role === 'admin') {
+    return authSession;
+  }
   const wrongRole = principal.role !== identity.role;
   const wrongBuyer = identity.role === 'buyer' && principal.buyer_id !== identity.buyerId;
   if (wrongRole || wrongBuyer) {
@@ -146,6 +149,9 @@ async function authenticatedFetch(
   const session = requireSession(identity);
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${session.accessToken}`);
+  if (identity.role === 'buyer' && session.principal.role === 'admin') {
+    headers.set('X-Acting-Buyer-ID', identity.buyerId);
+  }
   const response = await fetch(url, { ...init, headers });
   if (response.status !== 401) {
     return response;

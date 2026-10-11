@@ -577,6 +577,12 @@ textarea:focus {
   align-items: center;
   gap: 8px;
 }
+.admin-context {
+  padding-right: 9px;
+  border-right: 1px solid var(--border);
+  font-size: 12px;
+  color: #53627a;
+}
 .buyer-switch select {
   border: 0;
   appearance: none;

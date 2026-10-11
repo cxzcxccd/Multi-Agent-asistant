@@ -19,7 +19,7 @@ class Principal(BaseModel):
 
     subject: str
     display_name: str
-    role: Literal["buyer", "staff"]
+    role: Literal["buyer", "staff", "admin"]
     buyer_id: BuyerId | None = None
 
 

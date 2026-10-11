@@ -27,9 +27,13 @@ const modes = {
 export default function Workbench({
   active = true,
   productQuote,
+  actorName = '客服小周',
+  actorRole = '客服',
 }: {
   active?: boolean;
   productQuote?: { id: string; text: string };
+  actorName?: string;
+  actorRole?: '客服' | '管理员';
 }) {
   const s = useDemo(),
     [tab, setTab] = useState<'conversations' | 'approvals'>('conversations');
@@ -61,7 +65,7 @@ export default function Workbench({
         </div>
         <Badge tone="blue">
           <Headphones size={14} />
-          客服小周 · 模拟身份
+          {actorName} · {actorRole}
         </Badge>
       </div>
       <div className="work-stats">
@@ -228,7 +232,9 @@ export default function Workbench({
             >
               <textarea
                 aria-label="人工回复内容"
-                placeholder={c.mode === 'human' ? '以客服小周的身份回复…' : '接管会话后即可回复'}
+                placeholder={
+                  c.mode === 'human' ? `以${actorName}的身份回复…` : '接管会话后即可回复'
+                }
                 value={reply}
                 onChange={(e) => setReply(e.target.value)}
                 disabled={c.mode !== 'human'}
@@ -246,12 +252,12 @@ export default function Workbench({
           </section>
         </div>
       ) : (
-        <ApprovalList />
+        <ApprovalList actorName={actorName} />
       )}
     </div>
   );
 }
-function ApprovalList() {
+function ApprovalList({ actorName }: { actorName: string }) {
   const s = useDemo(),
     [filter, setFilter] = useState('all');
   const [reviewing, setReviewing] = useState<{ id: string; decision: 'approved' | 'rejected' }>();
@@ -369,8 +375,8 @@ function ApprovalList() {
             />
           </label>
           <p className="tiny muted">
-            {findProduct(findOrder(request.orderId, request.buyer)!.productId).name} ·
-            审核人：客服小周
+            {findProduct(findOrder(request.orderId, request.buyer)!.productId).name} · 审核人：
+            {actorName}
           </p>
           <div className="modal-actions">
             <button className="btn" disabled={submitting} onClick={() => setReviewing(undefined)}>

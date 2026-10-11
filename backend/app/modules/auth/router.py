@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.db.initialize import initialize_database
 from app.db.session import get_session_factory
-from app.modules.auth.dependencies import BuyerPrincipal, StaffPrincipal, get_current_user
+from app.modules.auth.dependencies import (
+    AdminPrincipal,
+    BuyerPrincipal,
+    StaffPrincipal,
+    get_current_user,
+)
 from app.modules.auth.repository import AuthRepository
 from app.modules.auth.schemas import LoginRequest, LogoutRequest, Principal, RefreshRequest, TokenResponse
 from app.modules.auth.service import AuthenticationError, AuthService
@@ -62,4 +67,9 @@ async def current_buyer(user: BuyerPrincipal) -> Principal:
 
 @router.get("/staff", response_model=Principal)
 async def current_staff(user: StaffPrincipal) -> Principal:
+    return user
+
+
+@router.get("/admin", response_model=Principal)
+async def current_admin(user: AdminPrincipal) -> Principal:
     return user

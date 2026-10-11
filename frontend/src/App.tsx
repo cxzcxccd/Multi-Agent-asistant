@@ -83,9 +83,16 @@ export default function App() {
   const visibleViews =
     backendChatEnabled && auth
       ? views.filter((item) =>
-          auth.principal.role === 'staff' ? item.id !== 'chat' : item.id === 'chat',
+          auth.principal.role === 'admin'
+            ? true
+            : auth.principal.role === 'staff'
+              ? item.id !== 'chat'
+              : item.id === 'chat',
         )
       : views;
+  const showBuyerSwitch =
+    (!backendChatEnabled || auth?.principal.role === 'admin') &&
+    (view === 'chat' || (view === 'shop' && shopOrigin !== 'workbench'));
   const openShop = () => {
     if (view !== 'shop') setShopOrigin(view);
     navigate('shop');
@@ -216,7 +223,11 @@ export default function App() {
           </div>
           <button
             className="sidebar-profile"
-            onClick={() => (auth?.principal.role === 'staff' ? navigate('lab') : undefined)}
+            onClick={() =>
+              auth?.principal.role === 'staff' || auth?.principal.role === 'admin'
+                ? navigate('lab')
+                : undefined
+            }
           >
             <span className="profile-mark">
               <Sparkles size={18} />
@@ -249,9 +260,11 @@ export default function App() {
               模拟数据
             </Badge>
             <span className="header-divider" />
-            {!backendChatEnabled &&
-            (view === 'chat' || (view === 'shop' && shopOrigin !== 'workbench')) ? (
+            {showBuyerSwitch ? (
               <label className="buyer-switch">
+                {auth?.principal.role === 'admin' && (
+                  <span className="admin-context">{auth.principal.display_name} · 代操作</span>
+                )}
                 <span className="header-avatar">{buyers[s.buyer][0]}</span>
                 <select
                   aria-label="切换模拟买家"
@@ -292,7 +305,12 @@ export default function App() {
           </div>
           <div className="route-pane" hidden={view !== 'workbench'}>
             {visited.includes('workbench') && (
-              <Workbench active={view === 'workbench'} productQuote={productQuote} />
+              <Workbench
+                active={view === 'workbench'}
+                productQuote={productQuote}
+                actorName={auth?.principal.display_name || '客服小周'}
+                actorRole={auth?.principal.role === 'admin' ? '管理员' : '客服'}
+              />
             )}
           </div>
           <div className="route-pane" hidden={view !== 'lab'}>

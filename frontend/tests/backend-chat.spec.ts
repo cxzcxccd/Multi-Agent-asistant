@@ -33,7 +33,8 @@ test('买家可以保存、重新读取和删除跨会话购物偏好', async ({
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/auth/login', async (route) => {
     const body = route.request().postDataJSON() as { username: string };
-    const role = body.username === 'staff' ? 'staff' : 'buyer';
+    const role =
+      body.username === 'staff' ? 'staff' : body.username === 'admin' ? 'admin' : 'buyer';
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -44,7 +45,8 @@ test.beforeEach(async ({ page }) => {
         expires_in: 1800,
         principal: {
           subject: body.username,
-          display_name: role === 'staff' ? '客服小周' : '演示买家',
+          display_name:
+            role === 'staff' ? '客服小周' : role === 'admin' ? '平台管理员' : '演示买家',
           role,
           buyer_id: role === 'buyer' ? 'A' : null,
         },
@@ -67,9 +69,12 @@ async function send(page: Page, message: string) {
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
 }
 
-async function login(page: Page, username: 'buyer_a' | 'buyer_b' | 'staff' = 'buyer_a') {
+async function login(page: Page, username: 'buyer_a' | 'buyer_b' | 'staff' | 'admin' = 'buyer_a') {
   await page.goto('/');
-  const password = username === 'staff' ? 'staff-demo' : `${username.replace('_', '-')}-demo`;
+  const password =
+    username === 'staff' || username === 'admin'
+      ? `${username}-demo`
+      : `${username.replace('_', '-')}-demo`;
   await page.getByLabel('账号').fill(username);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -249,6 +254,38 @@ test('登录身份决定可访问的工作空间', async ({ page }) => {
   await switchToStaff(page);
   await expect(page.getByRole('link', { name: '客服工作台' })).toBeVisible();
   await expect(page.getByRole('link', { name: '买家客服' })).toHaveCount(0);
+});
+
+test('管理员可以访问全部工作空间并选择买家使用 AI 客服', async ({ page }) => {
+  const buyerIds: string[] = [];
+  await page.route('**/api/chat/stream', async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON() as ChatRequestBody;
+    expect(request.headers().authorization).toBe('Bearer test-token-admin');
+    expect(request.headers()['x-acting-buyer-id']).toBe(body.buyer_id);
+    buyerIds.push(body.buyer_id);
+    await returnReply(route, `管理员正在为买家 ${body.buyer_id} 使用 AI 客服`);
+  });
+
+  await login(page, 'admin');
+  await expect(page.getByRole('link', { name: '买家客服' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '客服工作台' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '开发者与评测' })).toBeVisible();
+  await expect(page.getByText('平台管理员')).toBeVisible();
+
+  await send(page, '先查看买家 A 的咨询');
+  await expect(
+    page.getByRole('log', { name: '聊天记录' }).getByText('管理员正在为买家 A 使用 AI 客服'),
+  ).toBeVisible();
+  await page.getByLabel('切换模拟买家').selectOption('B');
+  await send(page, '再查看买家 B 的咨询');
+  await expect(
+    page.getByRole('log', { name: '聊天记录' }).getByText('管理员正在为买家 B 使用 AI 客服'),
+  ).toBeVisible();
+  expect(buyerIds).toEqual(['A', 'B']);
+
+  await page.getByRole('link', { name: '客服工作台' }).click();
+  await expect(page.getByText('平台管理员 · 管理员')).toBeVisible();
 });
 
 test('客服可以运行真实 RAG 检索评测并查看指标', async ({ page }) => {

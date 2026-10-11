@@ -126,45 +126,60 @@ def _seed_orders() -> None:
 
 
 def _seed_users() -> None:
-    """数据库没有账号时创建本地演示用户。"""
+    """补齐缺少的本地演示账号，不覆盖已有账号。"""
 
     session_factory = get_session_factory()
     with session_factory.begin() as session:
-        user_count = session.scalar(select(func.count()).select_from(UserRecord))
-        if user_count:
-            return
-
         now = datetime.now(UTC)
+        existing_usernames: set[str] = set()
+        usernames = session.scalars(select(UserRecord.username)).all()
+        for username in usernames:
+            existing_usernames.add(username)
+
         demo_users = [
-            UserRecord(
-                username="buyer_a",
-                display_name="林同学",
-                password_hash=hash_password(settings.demo_buyer_a_password.get_secret_value()),
-                role="buyer",
-                buyer_id="A",
-                is_active=True,
-                created_at=now,
+            (
+                "buyer_a",
+                "林同学",
+                settings.demo_buyer_a_password.get_secret_value(),
+                "buyer",
+                "A",
             ),
-            UserRecord(
-                username="buyer_b",
-                display_name="陈同学",
-                password_hash=hash_password(settings.demo_buyer_b_password.get_secret_value()),
-                role="buyer",
-                buyer_id="B",
-                is_active=True,
-                created_at=now,
+            (
+                "buyer_b",
+                "陈同学",
+                settings.demo_buyer_b_password.get_secret_value(),
+                "buyer",
+                "B",
             ),
-            UserRecord(
-                username="staff",
-                display_name="客服小周",
-                password_hash=hash_password(settings.demo_staff_password.get_secret_value()),
-                role="staff",
-                buyer_id=None,
-                is_active=True,
-                created_at=now,
+            (
+                "staff",
+                "客服小周",
+                settings.demo_staff_password.get_secret_value(),
+                "staff",
+                None,
+            ),
+            (
+                "admin",
+                "平台管理员",
+                settings.demo_admin_password.get_secret_value(),
+                "admin",
+                None,
             ),
         ]
-        session.add_all(demo_users)
+        for username, display_name, password, role, buyer_id in demo_users:
+            if username in existing_usernames:
+                continue
+            session.add(
+                UserRecord(
+                    username=username,
+                    display_name=display_name,
+                    password_hash=hash_password(password),
+                    role=role,
+                    buyer_id=buyer_id,
+                    is_active=True,
+                    created_at=now,
+                )
+            )
 
 
 def _seed_knowledge() -> None:

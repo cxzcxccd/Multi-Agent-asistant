@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Headphones, LockKeyhole, ShoppingBag } from 'lucide-react';
+import { Headphones, LockKeyhole, ShieldCheck, ShoppingBag } from 'lucide-react';
 import { loginAccount } from './api';
 import type { AuthSession } from './api';
 
@@ -13,11 +13,12 @@ export default function Login({
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const chooseDemoAccount = (account: 'buyer_a' | 'buyer_b' | 'staff') => {
+  const chooseDemoAccount = (account: 'buyer_a' | 'buyer_b' | 'staff' | 'admin') => {
     setUsername(account);
     if (account === 'buyer_a') setPassword('buyer-a-demo');
     if (account === 'buyer_b') setPassword('buyer-b-demo');
     if (account === 'staff') setPassword('staff-demo');
+    if (account === 'admin') setPassword('admin-demo');
     setError('');
   };
 
@@ -53,7 +54,7 @@ export default function Login({
           </span>
           <div>
             <h1 id="login-title">登录工作空间</h1>
-            <p>系统会根据账号角色开放买家端或客服工作台。</p>
+            <p>系统会根据账号角色开放买家端、客服工作台或完整管理视图。</p>
           </div>
         </div>
         <form onSubmit={submit}>
@@ -96,6 +97,10 @@ export default function Login({
           <button type="button" onClick={() => chooseDemoAccount('staff')}>
             <Headphones size={14} />
             客服
+          </button>
+          <button type="button" onClick={() => chooseDemoAccount('admin')}>
+            <ShieldCheck size={14} />
+            管理员
           </button>
         </div>
       </section>

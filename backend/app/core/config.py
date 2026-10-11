@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     demo_buyer_a_password: SecretStr = SecretStr("buyer-a-demo")
     demo_buyer_b_password: SecretStr = SecretStr("buyer-b-demo")
     demo_staff_password: SecretStr = SecretStr("staff-demo")
+    demo_admin_password: SecretStr = SecretStr("admin-demo")
     model_provider: str = "openai"
     model_name: str = ""
     model_api_key: SecretStr | None = None
