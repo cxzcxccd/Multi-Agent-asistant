@@ -21,3 +21,5 @@ class ProductRecord(Base):
     description: Mapped[str] = mapped_column(String(1000), nullable=False)
     color: Mapped[str] = mapped_column(String(50), nullable=False)
     source: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    image_url: Mapped[str] = mapped_column(String(300), nullable=False, default="", server_default="")

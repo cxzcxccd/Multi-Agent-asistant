@@ -30,6 +30,7 @@ from app.modules.knowledge.service import KnowledgeService
 from app.modules.knowledge.vector_store import InMemoryKnowledgeVectorStore
 from app.modules.knowledge.evaluation import ModelRagAnswerEngine, RagEvaluator
 from app.modules.knowledge.schemas import KnowledgeSearchItem
+from app.modules.knowledge.records import DEFAULT_CASES_PATH, new_record_directory, save_record_metadata
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -210,6 +211,11 @@ def run_case(client, judge, case: dict) -> dict:
         "retrieval_latencies_ms": retrieval_latencies,
         "usage": RagEvaluator._sum_usage(usage_records),
         "answer": answer, "sources": source_ids,
+        "retrieved_chunks": [item.model_dump(mode="json") for item in contexts],
+        "expected_tool": case["expected_tool"],
+        "expected_sources": case.get("expected_sources", []),
+        "reference_answer": case.get("reference_answer"),
+        "should_answer": case.get("should_answer"),
         "quality": quality.model_dump() if quality is not None else None,
         "parameter_review": parameter_review,
         "error": error, "evaluation_error": evaluation_error,
@@ -219,15 +225,17 @@ def run_case(client, judge, case: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", type=Path, default=BACKEND_ROOT / "data/evaluation/rag_runtime_smoke.json")
-    parser.add_argument("--output", type=Path, default=BACKEND_ROOT / "data/evaluation/results/rag-runtime")
+    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--in-memory", action="store_true", help="真实BGE、隔离临时正文库和内存余弦检索，不修改业务数据库")
     parser.add_argument("--input-price-per-million", type=float)
     parser.add_argument("--output-price-per-million", type=float)
     parser.add_argument("--cost-currency", default="CNY")
-    parser.add_argument("--workers", type=int, default=1, help="并发样本数，延迟报告必须注明负载")
+    parser.add_argument("--workers", type=int, default=4, help="并发样本数，延迟报告必须注明负载")
     parser.add_argument("--resume", action="store_true", help="保留已完成样本，重试运行失败或评审失败；失败历史不覆盖")
     arguments = parser.parse_args()
+    if arguments.output is None:
+        arguments.output = new_record_directory()
     if arguments.workers < 1 or arguments.workers > 8:
         parser.error("并发样本数须在1到8之间")
     prices = (arguments.input_price_per_million, arguments.output_price_per_million)
@@ -255,6 +263,7 @@ def main() -> None:
     results = []
     arguments.output.mkdir(parents=True, exist_ok=True)
     detail_path = arguments.output / "runtime_results.jsonl"
+    pending_detail_path = arguments.output / "runtime_results.pending.jsonl"
     previous_results = {}
     if arguments.resume and detail_path.exists():
         report_path = arguments.output / "runtime_report.json"
@@ -314,7 +323,7 @@ def main() -> None:
         service.embedding_provider.embed_query("知识检索预热")
         initialization_ms = (time.perf_counter() - initialization_started) * 1000
         try:
-            with service_context, detail_path.open("w", encoding="utf-8") as output, ThreadPoolExecutor(max_workers=arguments.workers) as pool:
+            with service_context, pending_detail_path.open("w", encoding="utf-8") as output, ThreadPoolExecutor(max_workers=arguments.workers) as pool:
                 for result in pool.map(evaluate_or_reuse, cases):
                     results.append(result)
                     output.write(json.dumps(result, ensure_ascii=False) + "\n")
@@ -369,7 +378,7 @@ def main() -> None:
             values.append(quality[field])
         quality_averages[field] = RagEvaluator._average(values) if values else None
     report = {
-        "scope": "单个知识工具的受控真实模型实验，不是完整多Agent或JDDC500评测",
+        "scope": f"{len(cases)} 条单个知识工具的受控真实模型实验，不是完整多Agent评测",
         "model": settings.model_name, "cases": len(results),
         "workers": arguments.workers,
         "configuration_fingerprint": configuration_fingerprint(),
@@ -415,7 +424,12 @@ def main() -> None:
         cost = (total_usage["input_tokens"] * prices[0] + total_usage["output_tokens"] * prices[1]) / 1_000_000
         report["estimated_total_cost"] = cost
         report["average_request_cost"] = cost / len(results)
+    pending_detail_path.replace(detail_path)
     (arguments.output / "runtime_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    snapshot = arguments.output / "runtime_record.pending.json"
+    snapshot.write_text(json.dumps({"runtime": report, "runtime_results": results}, ensure_ascii=False), encoding="utf-8")
+    snapshot.replace(arguments.output / "runtime_record.json")
+    save_record_metadata(arguments.output, arguments.cases)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

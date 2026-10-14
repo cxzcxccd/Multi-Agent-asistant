@@ -135,6 +135,31 @@ def test_compound_query_keeps_a_secondary_intent() -> None:
     assert analysis.secondary_intents == [IntentName.ORDER_INQUIRY]
 
 
+def test_short_return_policy_does_not_fall_back_to_general_conversation() -> None:
+    preprocessor = make_preprocessor()
+    for query in ("七天无理由", "7天无理由退货", "七天无理由退货的条件"):
+        preprocessor.intent_router.embedding_provider.vectors[query] = [-0.7, -0.7]
+        analysis = preprocessor.analyze([HumanMessage(content=query)])
+        assert analysis.primary_intent is IntentName.KNOWLEDGE_INQUIRY
+        assert analysis.router_source == "policy_topic"
+
+
+def test_return_reason_uses_recent_request_but_explicit_policy_question_does_not() -> None:
+    preprocessor = make_preprocessor()
+    history = [HumanMessage(content="订单10004我要退货"), AIMessage(content="请补充退货原因。")]
+    query = "七天无理由"
+    messages = [*history, HumanMessage(content=query)]
+    routing_query = build_routing_query(messages, query)
+    preprocessor.intent_router.embedding_provider.vectors[routing_query] = [-0.7, -0.7]
+    analysis = preprocessor.analyze(messages)
+    assert analysis.primary_intent is IntentName.AFTER_SALE
+    assert analysis.router_source == "after_sale_context"
+    assert "订单10004" in analysis.routing_query
+    question = "七天无理由退货的条件"
+    preprocessor.intent_router.embedding_provider.vectors[question] = [-0.7, -0.7]
+    assert preprocessor.analyze([*history, HumanMessage(content=question)]).primary_intent is IntentName.KNOWLEDGE_INQUIRY
+
+
 def test_extract_entities_and_optimize_product_query() -> None:
     entities = extract_entities(
         "推荐500元以内的耳机",

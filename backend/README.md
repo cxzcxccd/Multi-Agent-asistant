@@ -1,5 +1,35 @@
 # 极客优选后端
 
+## 前端知识库浏览
+
+“开发者与评测 → 知识库”通过 `GET /api/staff/knowledge/documents` 展示 RAG
+当前使用的入库正文，按文档与知识块组织，包含章节、来源、文档版本和更新时间。
+客服与管理员可访问。页面支持全文搜索与分类，每 5 秒检查变化，并在重新进入页面时立即刷新；
+离开页面或切换到后台时暂停轮询。正文浏览不请求 Milvus，向量服务不可用时仍可读取已有正文。
+接口支持 ETag，内容未变化返回 304；连接失败时页面保留上次成功读取的内容并提示。
+
+Markdown 文件修改后仍须通过启动同步或 `POST /api/staff/knowledge/reindex` 入库，
+页面显示的是已同步、实际供 RAG 使用的版本。“演示控制”里的规则区域在后端模式下也使用同一接口。
+
+## 默认评测：当前知识库 JDDC 100 条
+
+检索接口、对照接口与 `scripts.evaluate_rag`、`scripts.evaluate_rag_runtime` 默认使用
+`data/evaluation/jddc_test_current_100.json`。旧 12 条与 500 条数据仅作为历史资料，
+需要实验时显式传入 `--cases`。新版 100 条仍为两遍模型辅助标注，并非人工金标准。
+
+每轮默认保存到 `data/evaluation/results/current-100/<时间与编号>/`。检索评测保存
+JSON 汇总、JSONL 明细和 Markdown；工具与回答评测保存实际答案、参数、评审与用量。
+前端评测预览通过 `GET /api/staff/knowledge/evaluations` 和对应详情接口加载，
+支持选择轮次、筛选失败案例和查看知识块正文。页面重新运行按钮只运行检索评测。
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.evaluate_rag --retrieval-only --limit 5
+.\.venv\Scripts\python.exe -m scripts.evaluate_rag_runtime --workers 4
+```
+
+如需将检索与工具评测放在同一轮，给两个命令传入相同的新 `--output` 目录。
+续跑需同时提供原目录与 `--resume`，保留完成样本、归档失败轮次，不重跑已完成的低分样本。
+
 ## 官方来源知识库（2026-10-09）
 
 当前运行目录 `data/knowledge` 使用 `sources.json` 清单加载 6 份京东、淘宝官方公开页面的核验摘要，共 47 块。每份资料已扩展为具体问题章节，覆盖返修备份、激活限制、赠品、改址、代收、不同渠道退款和店铺特色承诺。`scripts/import_official_knowledge.py` 实际访问原页面，核验关键片段并记录来源哈希；加载器给每个块附来源 URL、平台、范围与日期。详见 [采集说明](data/knowledge_sources/README.md)。未采集的商品使用指南已从运行知识库移除，具体商品参数继续走商品工具。
@@ -44,6 +74,7 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 
 - FastAPI 应用入口、健康检查和商品查询接口。
 - 商品数据格式校验、数据库读取、筛选、排序和分页；固定 JSON 只负责首次导入。
+- 管理员商品库存增删改查：新增商品、部分更新、库存盘点/入库/出库和删除；商品编号自动分配，负库存、超卖和越权角色会被拦截。
 - SQLite、SQLAlchemy 和 Alembic 数据库基础，以及商品、会话、消息、订单和物流迁移。
 - 订单、订单明细和物流节点表，以及按买家隔离的列表、详情和物流查询。
 - `list_orders`、`get_order` 和 `get_logistics` 三个 AI 工具；买家身份由服务端会话配置注入。
@@ -55,7 +86,9 @@ Alembic、LangChain、LangGraph、真实大模型和模拟业务数据，跑通�
 - 基于本地中文 FastEmbed 模型的 Query 语义路由，包含文本规范化、多轮上下文补全、意图识别、实体提取和业务 Query 整理。
 - 索引重建仅为新增或内容变化的片段生成向量；未变化片段直接复用已有向量。
 - OpenAI 与 OpenAI 兼容接口的模型客户端。
-- LangGraph `preprocess → supervisor → execute_tasks → synthesis` 任务级多 Agent 客服图；Supervisor 根据主次意图拆分商品、订单、售后、知识库或通用任务。
+- LangGraph `preprocess → supervisor → check_information → execute_tasks → synthesis` 任务级多 Agent 客服图；缺失信息先进入澄清分支。正式运行时 Supervisor 内置 `IntentRecognitionAgent`，结合 BGE 候选与最近会话识别主次意图，再拆分领域任务；无需依赖标点或连接词。随后结构化需求理解提取具体操作与槽位，校验后收紧业务工具权限和调整执行计划。
+- 意图 Agent 只绑定 `IntentRecognition` 输出结构，不绑定业务工具；标签与原话证据经后端校验。明确单意图、无上下文依赖且达到 `INTENT_FAST_MIN_SCORE=0.85`、`INTENT_FAST_MIN_MARGIN=0.15` 的白名单查询跳过意图模型，其余请求结合大模型复核。阈值是待校准的保守初始值，不代表正确率；任务/槽位提取阶段仍可能调用模型。
+- 仲裁区分一致、补充、规则纠正和真正冲突：新增领域需有原话业务依据，明确否定和纯政策咨询可按规则纠正，无法仲裁或条件性售后请求先澄清。澄清回复保留原始诉求；后续任务提取不能静默添加或删除已仲裁的领域，在业务对象查询之前阻断不一致。售后申请还要求当前请求（含待澄清原始请求）表达明确申请意愿，不把历史申请当成当前授权。`query_analysis` 记录 `embedding_intents`、`llm_intents`、`intent_evidence`、`routing_decision`、`routing_reason` 和追问，原相似度和候选仍表示 BGE 结果。模型调用及 Token 计入 `intent_recognition`；模型调用/输出校验失败返回可重试错误。离线测试可用不配置意图 Agent 的规则 Supervisor。
 - 无依赖任务通过 `asyncio.gather` 并行执行；订单到售后等带依赖任务按照 DAG 顺序执行，每个领域 Agent 使用独立消息上下文和最小工具集。
 - 汇总 Agent 不绑定任何业务工具，只读取结构化 `AgentTaskResult`；调度计划、任务结果、耗时和错误保存到 `agent_runs` 与 `agent_run_tasks`。
 - 独立 SQLite Checkpointer 保存顶层工作流和每个领域任务子图的状态；任务命名空间绑定当前用户消息 ID，恢复同一轮执行时直接复用已经完成的任务结果。
@@ -140,6 +173,58 @@ prepare_after_sale_draft → interrupt → 买家确认/取消
 
 模型无法提供或覆盖 `buyer_id`。订单不存在和其他买家的订单都会返回同一个不可查询结果。
 
+## 商品库存管理（管理员）
+
+商品目录在原有公开查询之外，提供仅管理员可用的写操作，路由前缀为 `/api/products`：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/products` | 新增商品，编号自动分配（p13、p14…），`source` 缺省为「手动录入」 |
+| PATCH | `/api/products/{product_id}` | 部分更新商品，未传字段保持不变 |
+| PATCH | `/api/products/{product_id}/stock` | 库存调整，`operation` 为 `set` 盘点 / `add` 入库 / `subtract` 出库 |
+| DELETE | `/api/products/{product_id}` | 删除商品，返回 204 |
+
+库存调整请求体：
+
+```json
+{ "operation": "add", "quantity": 20 }
+```
+
+`quantity` 必须是非负整数；`subtract` 导致负库存时返回 409，不允许超卖。
+新增商品请求体字段为 `name`、`category`（耳机/充电器/扩展坞）、`series`、`price`、`stock`、
+`specs`（非空数组）、`description`、`color`，以及可选的 `source`。
+
+权限与状态码：
+
+| 身份 | 结果 |
+| --- | --- |
+| 未登录 | 401 |
+| 买家 / 客服 | 403 |
+| 管理员 | 通过；商品不存在返回 404，参数校验失败返回 422 |
+
+PowerShell 调用示例：
+
+```powershell
+cd backend
+$login = Invoke-RestMethod http://127.0.0.1:8000/api/auth/login -Method Post `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes('{"username":"admin","password":"admin-demo"}')) `
+  -ContentType "application/json"
+$headers = @{ Authorization = "Bearer $($login.access_token)" }
+
+# 新增商品
+Invoke-RestMethod http://127.0.0.1:8000/api/products -Method Post -Headers $headers `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes('{"name":"测试耳机","category":"耳机","series":"Test","price":199,"stock":20,"specs":["规格一","规格二"],"description":"测试商品","color":"blue"}')) `
+  -ContentType "application/json"
+
+# 入库 20 件
+Invoke-RestMethod http://127.0.0.1:8000/api/products/p01/stock -Method Patch -Headers $headers `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes('{"operation":"add","quantity":20}')) `
+  -ContentType "application/json"
+```
+
+写操作分层与读操作一致：`router` 校验管理员身份 → `ProductService` 执行业务规则 →
+`SqlProductRepository` 读写 SQLite。前端「商品管理」工作空间（仅管理员可见）也调用同一批接口。
+
 ## 文件职责
 
 ```text
@@ -223,16 +308,18 @@ backend/
 │     │  ├─ models.py
 │     │  │  定义 products 数据表及字段、索引和 JSON 规格列。
 │     │  ├─ schemas.py
-│     │  │  定义 Product、商品分类、搜索条件和列表响应等 Pydantic 数据格式，
-│     │  │  校验商品编号、必填文本、价格、库存、分页和价格区间。
+│     │  │  定义 Product、ProductCreate、ProductUpdate、StockAdjustment、商品分类、
+│     │  │  搜索条件和列表响应等 Pydantic 数据格式，校验商品编号、必填文本、价格、
+│     │  │  库存、分页和价格区间。
 │     │  ├─ repository.py
-│     │  │  ProductRepository 校验 JSON 种子；SqlProductRepository 负责运行时数据库查询。
+│     │  │  ProductRepository 校验 JSON 种子；SqlProductRepository 负责运行时数据库
+│     │  │  查询，以及编号分配、新增、字段更新、库存调整和删除，并抛出重名与库存不足异常。
 │     │  ├─ service.py
-│     │  │  实现关键词、分类、价格、库存筛选，价格排序、分页和商品不存在异常；
-│     │  │  同时供 HTTP 路由与 AI 工具复用。
+│     │  │  实现关键词、分类、价格、库存筛选，价格排序、分页、商品不存在异常，以及
+│     │  │  新增、更新、库存调整和删除等写操作；同时供 HTTP 路由与 AI 工具复用。
 │     │  └─ router.py
-│     │     提供 GET /api/products 和 GET /api/products/{product_id}，通过 FastAPI
-│     │     依赖注入复用商品服务，并把不存在的商品转换为 404 响应。
+│     │     提供商品查询与管理员写接口（POST/PATCH/PATCH stock/DELETE），通过 FastAPI
+│     │     依赖注入复用商品服务，管理员端点做角色校验，并把不存在的商品转换为 404 响应。
 │     ├─ conversations/
 │        ├─ __init__.py
 │        │  标记会话模块为 Python 包。
@@ -284,6 +371,8 @@ backend/
    │  验证商品组合筛选、排序、分页和详情查询业务规则。
    ├─ test_catalog_api.py
    │  验证商品 HTTP 接口的成功响应、查询参数校验、404 和 422 响应。
+   ├─ test_catalog_admin_api.py
+   │  验证管理员商品新增、更新、库存盘点/入库/出库、删除、超卖 409 与角色权限，使用临时库隔离。
    ├─ test_catalog_tools.py
    │  验证两个 AI 商品工具的名称、参数校验、结构化结果和 JSON 序列化。
    ├─ test_conversation_schemas.py
@@ -340,6 +429,10 @@ backend/
 - `GET /api/health`：检查 FastAPI 服务是否运行。
 - `GET /api/products`：按关键词、分类、价格、库存、排序和分页查询商品。
 - `GET /api/products/{product_id}`：按商品编号查询详情。
+- `POST /api/products`：管理员新增商品，编号自动分配。
+- `PATCH /api/products/{product_id}`：管理员部分更新商品字段。
+- `PATCH /api/products/{product_id}/stock`：管理员按 set/add/subtract 盘点、入库或出库。
+- `DELETE /api/products/{product_id}`：管理员删除商品。
 - `GET /api/orders?buyer_id=A`：查询当前买家的订单列表。
 - `GET /api/orders/{order_id}?buyer_id=A`：查询当前买家的订单详情。
 - `GET /api/orders/{order_id}/logistics?buyer_id=A`：查询当前买家的物流状态和节点。
@@ -557,7 +650,7 @@ cd backend
 uv run --no-cache pytest -q
 ```
 
-当前共有 185 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
+当前共有 375 项后端测试。自动化测试使用模型替身、内存向量库和隔离数据库，不会连接 Milvus，
 也不会消耗模型额度。真实模型与 Milvus 闭环需要本地 `.env` 配置，并应作为单独的手动集成测试运行。
 
 ## 下一步
@@ -660,3 +753,38 @@ python -m scripts.evaluate_rag_runtime --cases data/evaluation/jddc_test_current
 ```
 
 默认使用真实BGE与Milvus；默认不把标签分类作为直接检索过滤条件。运行指标的P95必须同时注明workers，模型参数语义评审不计入在线耗时，评审失败单独报告并计任务未通过。新的参数检查允许同义改写与多个合理分类，旧7条词项契约成绩不能直接比较。
+
+## 请求执行追踪
+
+后端将执行追踪写入标准错误流，每行一个 JSON。启动服务时可以使用
+`python -m uvicorn app.main:app 2> backend.log` 保存日志；文件中也可能包含 Uvicorn 普通日志。
+
+每次 HTTP 请求开始时生成 `trace_id` 和 `run_id`，响应头通过 `X-Trace-ID`
+和 `X-Run-ID` 返回，跨域前端也可读取。聊天运行完成后，持久化 Agent 运行记录的
+`id` 与本次请求的 `run_id` 一致。重试、确认恢复均属于新请求，生成新的标识。
+日志中的 `conversation_id` 可以关联同一会话的多次执行。
+
+在 PowerShell 中使用 `Select-String -Path backend.log -SimpleMatch '<trace_id>'`
+筛选一次请求。日志覆盖 `request`、`workflow`、`router`、`supervisor`、`agent`、
+`synthesis`、`tool`、`retrieval` 和 `retrieval.memory`；步骤使用 `.start`、`.end`、
+`.failed` 或 `.cancelled`，结束事件包含 `duration_ms`。并行任务通过 `task_id`
+和 `agent` 区分，工具通过 `tool_call_id` 关联开始和结束。
+
+知识检索分别记录 `retrieval.bm25`、`retrieval.vector`、`retrieval.fusion`，
+启用重排时还有 `retrieval.rerank`。`.result` 事件记录候选数量、最终来源 ID、
+分数和检索模式；Supervisor 结果记录任务分配及执行模式。
+日志不记录完整用户消息、工具输入、工具正文、访问令牌和异常消息。
+断线记录 `request.disconnected`，执行取消记录相应 `.cancelled`。
+这些日志不承担任务恢复功能；跨进程 MCP 服务内部步骤仍需服务端独立追踪。
+
+## HyDE 增量检索
+
+支持 `KNOWLEDGE_RETRIEVAL_STRATEGY=hyde`，将假设文档向量召回与原问题 BM25、向量召回做 RRF 融合。生成失败回退，假设正文不作为回答证据。启用、接口、对照评测及费用边界见 [HyDE 说明](../docs/hyde.md)。
+
+## 多轮上下文分层
+
+多Agent采用常驻规则、按领域加载的任务指引和带来源的结构化会话对象。对象从已持久化的当前会话用户消息重建，支持更正、多候选澄清、历史裁剪后的引用，以及HyDE前的商品指代补全；不替代后端身份、订单归属与写操作确认。实现范围与例子见 [上下文分层说明](../docs/context-layers.md)。
+
+## 场景记忆与Token预算压缩
+
+未完成诉求按对象、操作、条件和约束组织场景，来源与更正可回溯；模型调用前用本地BPE估算控制上下文，保留当前问题与必要事实，超限明确失败。预算配置、每个数字的依据、固定合成实验及边界见 [上下文压缩说明](../docs/context-compression.md)。重启后端自动应用场景缓存迁移；新预算默认启用，不需要新增模型服务。

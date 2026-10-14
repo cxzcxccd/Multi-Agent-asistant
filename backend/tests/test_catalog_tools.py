@@ -26,6 +26,10 @@ def test_search_products_returns_matching_in_stock_headphones() -> None:
     assert result["total"] == 2
     assert result["returned"] == 2
     assert result["has_more"] is False
+    assert result["product_links"] == [
+        {"id": item["id"], "name": item["name"], "url": f"#shop?product={item['id']}"}
+        for item in result["items"]
+    ]
 
 
 def test_search_products_limits_model_context_and_reports_more_matches() -> None:
@@ -46,13 +50,14 @@ def test_search_products_returns_an_empty_successful_result() -> None:
         "total": 0,
         "returned": 0,
         "has_more": False,
+        "product_links": [],
     }
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"category": "手机"},
+        {"category": "   "},
         {"max_price": -1},
         {"min_price": 300, "max_price": 100},
         {"limit": 11},
@@ -72,6 +77,9 @@ def test_get_product_returns_complete_product_details() -> None:
     assert result["product"]["name"] == "AirBeat Pro 降噪耳机"
     assert result["product"]["price"] == 299
     assert result["product"]["source"].startswith("KB-P01")
+    assert result["product_links"] == [
+        {"id": "p01", "name": "AirBeat Pro 降噪耳机", "url": "#shop?product=p01"}
+    ]
 
 
 def test_get_product_returns_a_structured_not_found_error() -> None:
@@ -80,6 +88,7 @@ def test_get_product_returns_a_structured_not_found_error() -> None:
     assert result == {
         "success": False,
         "product": None,
+        "product_links": [],
         "error": {"code": "PRODUCT_NOT_FOUND", "message": "未找到商品：p99"},
     }
 

@@ -18,6 +18,7 @@ from app.modules.knowledge.reranker import FastEmbedReranker
 from app.modules.knowledge.repository import KnowledgeRepository
 from app.modules.knowledge.service import KnowledgeService
 from app.modules.knowledge.vector_store import InMemoryKnowledgeVectorStore
+from app.modules.knowledge.records import DEFAULT_CASES_PATH, new_record_directory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,7 +30,10 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="只评估检索，不调用聊天模型生成和评审答案",
     )
-    parser.add_argument("--limit", type=int, default=3, help="每个问题返回的知识块数量")
+    parser.add_argument("--limit", type=int, default=5, help="每个问题返回的知识块数量")
+    parser.add_argument("--strategy", choices=["keyword", "vector", "hybrid", "hybrid_rerank", "hyde"],
+                        default="hybrid", help="单方案检索策略；HyDE 仍会调用模型生成假设文档")
+    parser.add_argument("--include-hyde", action="store_true", help="对比评测额外包含 HyDE（调用模型）")
     parser.add_argument(
         "--compare",
         action="store_true",
@@ -48,13 +52,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--cases",
         type=Path,
-        default=BACKEND_ROOT / "data" / "evaluation" / "rag_cases.json",
+        default=DEFAULT_CASES_PATH,
         help="评测案例 JSON 文件",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=BACKEND_ROOT / "data" / "evaluation" / "results",
+        default=None,
         help="评测结果目录",
     )
     parser.add_argument("--input-price-per-million", type=float, help="每百万输入Token价格，由用户提供")
@@ -65,6 +69,8 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     arguments = parse_arguments()
+    if arguments.output is None:
+        arguments.output = new_record_directory()
     initialize_database()
     repository = KnowledgeRepository(get_session_factory())
     if arguments.in_memory:
@@ -81,6 +87,8 @@ def main() -> None:
         print("评测向量存储：in-memory（真实BGE，未连接Milvus）")
     else:
         service = KnowledgeService(repository)
+    if arguments.strategy == "hybrid_rerank" and not arguments.compare:
+        service.reranker = FastEmbedReranker()
 
     answer_engine = None
     if not arguments.retrieval_only:
@@ -91,6 +99,7 @@ def main() -> None:
         service,
         arguments.cases,
         answer_engine,
+        strategy=arguments.strategy,
         use_category=arguments.use_category,
         input_price_per_million=arguments.input_price_per_million,
         output_price_per_million=arguments.output_price_per_million,
@@ -114,6 +123,8 @@ def main() -> None:
             "hybrid": service,
             "hybrid_rerank": rerank_service,
         }
+        if arguments.include_hyde:
+            services["hyde"] = service
         comparison_evaluator = RagComparisonEvaluator(
             services,
             arguments.cases,

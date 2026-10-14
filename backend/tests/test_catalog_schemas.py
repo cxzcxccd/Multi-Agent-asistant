@@ -63,7 +63,7 @@ def test_search_params_validate_and_normalize_filters() -> None:
     )
 
     assert params.keyword == "AirBeat"
-    assert params.category is ProductCategory.HEADPHONES
+    assert params.category == ProductCategory.HEADPHONES
     assert params.limit == 20
 
 

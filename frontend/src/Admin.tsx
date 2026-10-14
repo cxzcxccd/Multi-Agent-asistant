@@ -6,6 +6,8 @@ import {
   deleteProduct,
   getAllProducts,
   updateProduct,
+  uploadProductImage,
+  productImageUrl,
   type ProductCreatePayload,
   type StockOperation,
 } from './api';
@@ -21,6 +23,7 @@ type DialogState =
   | { type: 'delete'; product: Product };
 
 interface ProductForm {
+  image_url: string;
   name: string;
   category: Category;
   series: string;
@@ -33,6 +36,7 @@ interface ProductForm {
 }
 
 const emptyForm: ProductForm = {
+  image_url: '',
   name: '',
   category: '耳机',
   series: '',
@@ -45,6 +49,7 @@ const emptyForm: ProductForm = {
 };
 
 const toForm = (product: Product): ProductForm => ({
+  image_url: product.image_url || '',
   name: product.name,
   category: product.category,
   series: product.series,
@@ -70,6 +75,7 @@ export default function Admin() {
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState('');
   const [stockOperation, setStockOperation] = useState<StockOperation>('add');
   const [stockQuantity, setStockQuantity] = useState('');
@@ -122,7 +128,25 @@ export default function Admin() {
     });
   };
 
+  const selectImage = async (file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+      setFormError('图片不能超过 5 MB');
+      return;
+    }
+    setUploading(true);
+    setFormError('');
+    try {
+      const image_url = await uploadProductImage(file);
+      setForm((current) => ({ ...current, image_url }));
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : '图片上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const submitForm = async () => {
+    if (uploading || submitting) return;
     const price = Number.parseInt(form.price, 10);
     const stock = Number.parseInt(form.stock, 10);
     const specs = parseSpecs(form.specs);
@@ -144,9 +168,16 @@ export default function Admin() {
       return;
     }
 
+    const category = form.category.trim();
+    if (!category || category.length > 50) {
+      setFormError('分类不能为空，且不能超过 50 个字符。');
+      return;
+    }
+
     const commonFields = {
+      image_url: form.image_url,
       name: form.name.trim(),
-      category: form.category,
+      category,
       series: form.series.trim(),
       price,
       specs,
@@ -382,9 +413,37 @@ export default function Admin() {
       {(dialog.type === 'create' || dialog.type === 'edit') && (
         <Modal
           title={dialog.type === 'create' ? '新增商品' : `编辑商品 ${dialog.product.id}`}
-          onClose={() => setDialog({ type: 'closed' })}
+          onClose={() => {
+            if (!uploading && !submitting) setDialog({ type: 'closed' });
+          }}
         >
           <div className="admin-form">
+            <label className="admin-field">
+              商品图片
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                disabled={uploading || submitting}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) void selectImage(file);
+                }}
+              />
+              <small>{uploading ? '正在上传图片…' : '支持 JPG、PNG、WebP，最大 5 MB。'}</small>
+            </label>
+            {form.image_url && (
+              <div className="admin-image-preview">
+                <img src={productImageUrl(form.image_url)} alt="商品图片预览" />
+                <button
+                  className="btn"
+                  disabled={uploading || submitting}
+                  onClick={() => set({ image_url: '' })}
+                >
+                  移除图片
+                </button>
+              </div>
+            )}
             <label className="admin-field">
               商品名称
               <input
@@ -397,14 +456,21 @@ export default function Admin() {
             <div className="admin-form-grid">
               <label className="admin-field">
                 分类
-                <select
+                <input
                   value={form.category}
-                  onChange={(e) => set({ category: e.target.value as Category })}
-                >
-                  <option value="耳机">耳机</option>
-                  <option value="充电器">充电器</option>
-                  <option value="扩展坞">扩展坞</option>
-                </select>
+                  list="product-categories"
+                  maxLength={50}
+                  onChange={(e) => set({ category: e.target.value })}
+                  placeholder="选择已有分类或输入新分类"
+                />
+                <datalist id="product-categories">
+                  {Array.from(
+                    new Set(['耳机', '充电器', '扩展坞', ...products.map((p) => p.category)]),
+                  ).map((category) => (
+                    <option key={category} value={category} />
+                  ))}
+                </datalist>
+                <small>可以直接输入新分类，保存商品后即可使用。</small>
               </label>
               <label className="admin-field">
                 系列
@@ -481,14 +547,14 @@ export default function Admin() {
               <button
                 className="btn"
                 onClick={() => setDialog({ type: 'closed' })}
-                disabled={submitting}
+                disabled={submitting || uploading}
               >
                 取消
               </button>
               <button
                 className="btn btn-primary"
                 onClick={() => void submitForm()}
-                disabled={submitting}
+                disabled={submitting || uploading}
                 data-testid="save-product"
               >
                 <Save size={15} /> {submitting ? '保存中…' : '保存商品'}
@@ -551,14 +617,14 @@ export default function Admin() {
               <button
                 className="btn"
                 onClick={() => setDialog({ type: 'closed' })}
-                disabled={submitting}
+                disabled={submitting || uploading}
               >
                 取消
               </button>
               <button
                 className="btn btn-primary"
                 onClick={() => void submitStock()}
-                disabled={submitting}
+                disabled={submitting || uploading}
                 data-testid="confirm-stock"
               >
                 {submitting ? '处理中…' : '确认调整'}
@@ -586,14 +652,14 @@ export default function Admin() {
               <button
                 className="btn"
                 onClick={() => setDialog({ type: 'closed' })}
-                disabled={submitting}
+                disabled={submitting || uploading}
               >
                 取消
               </button>
               <button
                 className="btn btn-danger"
                 onClick={() => void confirmDelete()}
-                disabled={submitting}
+                disabled={submitting || uploading}
                 data-testid="confirm-delete"
               >
                 <Trash2 size={15} /> {submitting ? '删除中…' : '确认删除'}

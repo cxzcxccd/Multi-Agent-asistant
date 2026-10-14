@@ -280,3 +280,35 @@ def test_after_sale_workflow_interrupts_and_resumes_from_checkpoint(
             assert "confirm" in str(synthesis.messages[0].content)
 
     asyncio.run(run_confirmation())
+
+
+def test_cancellation_finishes_checkpoint_without_calling_model(tmp_path: Any) -> None:
+    class UnavailableSynthesis:
+        async def ainvoke(self, *args, **kwargs):
+            raise AssertionError("取消不应调用汇总模型，即使模型不可用也应成功")
+
+    async def scenario():
+        path = (tmp_path / "cancel.db").as_posix()
+        config = {"configurable": {"thread_id": "cancel-confirmation", "buyer_id": "A"}}
+        domain = DirectClient("unused", [], "after_sales")
+        options = dict(
+            model_client=domain, query_preprocessor=FixedPreprocessor(IntentName.AFTER_SALE),
+            agent_clients={AgentName.AFTER_SALES: domain}, synthesis_client=UnavailableSynthesis(),
+        )
+        async with open_sqlite_checkpointer(path) as saver:
+            runtime = ConfirmationRuntime(**options, checkpointer=saver)
+            paused = await runtime.ainvoke([HumanMessage(content="订单10002申请退货")], config=config)
+            assert isinstance(paused, RuntimePause)
+        # 重开检查点连接后，仍可直接完成取消，不重新执行工具或模型。
+        async with open_sqlite_checkpointer(path) as saver:
+            runtime = ConfirmationRuntime(**options, checkpointer=saver)
+            result = await runtime.aresume({"action": "cancel"}, config=config)
+            assert "草稿已取消" in result.reply.text
+            assert "没有提交" in result.reply.text
+            assert result.model_calls == paused.model_calls
+            assert result.tool_calls == paused.tool_calls
+            snapshot = await runtime.graph.aget_state(config)
+            assert not snapshot.next
+            assert snapshot.values["pending_clarification"] is None
+
+    asyncio.run(scenario())

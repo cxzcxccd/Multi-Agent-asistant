@@ -131,6 +131,8 @@ def test_create_model_client_builds_openai_model_and_binds_catalog_tools(
         "temperature": 0.1,
         "timeout": 30.0,
         "max_retries": 2,
+        "stream_usage": True,
+        "max_tokens": 2048,
     }
     assert [tool.name for tool in client.tools] == [
         "search_products",

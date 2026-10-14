@@ -198,3 +198,28 @@ def test_failed_index_migration_exposes_error_and_preserves_rows() -> None:
         store.ensure_collection(512)
     assert client.drop_calls == 0
     assert client.rows == [{"id": "policy:0"}]
+
+
+@pytest.mark.parametrize("uri, bypass", [
+    ("http://127.0.0.1:19530", True),
+    ("http://localhost:19530", True),
+    ("http://[::1]:19530", True),
+    ("http://127.0.0.2:19530", True),
+    ("https://milvus.example.com", False),
+])
+def test_only_loopback_milvus_connections_bypass_proxy(monkeypatch, uri, bypass):
+    from app.modules.knowledge import vector_store
+    captured = {}
+    sentinel = object()
+    def client(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+    monkeypatch.setattr(vector_store, "MilvusClient", client)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    store = MilvusKnowledgeVectorStore(Settings(milvus_uri=uri))
+    assert store._get_client() is sentinel
+    if bypass:
+        assert captured["grpc_options"]["grpc.enable_http_proxy"] == 0
+    else:
+        assert "grpc_options" not in captured
+    assert store._get_client() is sentinel

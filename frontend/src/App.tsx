@@ -13,7 +13,7 @@ import {
   ShoppingBag,
   Sparkles,
 } from 'lucide-react';
-import { buyers, DEMO_DATE, findProduct, money } from './data';
+import { buyers, DEMO_DATE, money } from './data';
 import {
   backendChatEnabled,
   currentConversation,
@@ -30,13 +30,14 @@ import Workbench from './Workbench';
 import Lab from './Lab';
 import Shop from './Shop';
 import Admin from './Admin';
-import type { BuyerId, View } from './types';
+import type { BuyerId, Product, View } from './types';
+import { productIdFromHash } from './productLinks';
 import { getAuthSession, logoutAccount } from './api';
 import type { AuthSession } from './api';
 import Login from './Login';
 
 const readView = (): View => {
-  const hash = location.hash.slice(1);
+  const hash = location.hash.slice(1).split('?')[0];
   return hash === 'workbench' || hash === 'lab' || hash === 'shop' || hash === 'admin'
     ? hash
     : 'chat';
@@ -52,6 +53,7 @@ export default function App() {
     [view, setView] = useState<View>(readView),
     [navOpen, setNavOpen] = useState(false);
   const [shopOrigin, setShopOrigin] = useState<Exclude<View, 'shop'>>('chat');
+  const [shopProductId, setShopProductId] = useState(() => productIdFromHash(location.hash));
   const [auth, setAuth] = useState<AuthSession | null>(() => getAuthSession());
   const [productQuote, setProductQuote] = useState<{ id: string; text: string }>();
   const [visited, setVisited] = useState<View[]>(() => [readView()]);
@@ -60,6 +62,10 @@ export default function App() {
   useEffect(() => {
     const handle = () => {
       const next = readView();
+      const productId = productIdFromHash(location.hash);
+      setShopProductId(productId);
+      if (productId)
+        setShopOrigin(getAuthSession()?.principal.role === 'staff' ? 'workbench' : 'chat');
       setView(next);
       markVisited(next);
     };
@@ -79,6 +85,7 @@ export default function App() {
   useEffect(() => {
     if (!backendChatEnabled || auth === null) return;
     const role = auth.principal.role;
+    if (role === 'staff' && view === 'shop') setShopOrigin('workbench');
     if (role === 'buyer' && view !== 'chat' && view !== 'shop') {
       navigate('chat');
     } else if (role === 'staff' && (view === 'chat' || view === 'admin')) {
@@ -109,8 +116,7 @@ export default function App() {
     if (view !== 'shop') setShopOrigin(view);
     navigate('shop');
   };
-  const productAction = (id: string) => {
-    const product = findProduct(id);
+  const productAction = (product: Product) => {
     if (shopOrigin === 'workbench') {
       setProductQuote({
         id: crypto.randomUUID(),
@@ -326,7 +332,7 @@ export default function App() {
             )}
           </div>
           <div className="route-pane" hidden={view !== 'lab'}>
-            {visited.includes('lab') && <Lab />}
+            {visited.includes('lab') && <Lab active={view === 'lab'} />}
           </div>
           <div className="route-pane" hidden={view !== 'admin'}>
             {visited.includes('admin') && <Admin />}
@@ -334,6 +340,12 @@ export default function App() {
           <div className="route-pane" hidden={view !== 'shop'}>
             {visited.includes('shop') && (
               <Shop
+                active={view === 'shop'}
+                initialProductId={shopProductId}
+                onDetailClose={() => {
+                  setShopProductId(undefined);
+                  location.hash = 'shop';
+                }}
                 origin={shopOrigin}
                 onBack={() => navigate(shopOrigin)}
                 onProductAction={productAction}

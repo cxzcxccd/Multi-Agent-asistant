@@ -23,6 +23,7 @@ class AgentRunModel(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     plan_json: Mapped[str] = mapped_column(Text, nullable=False)
     final_answer: Mapped[str | None] = mapped_column(Text)
+    telemetry_json: Mapped[str | None] = mapped_column(Text)
     model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
     tool_calls: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

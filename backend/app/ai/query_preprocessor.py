@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import Settings, settings
 from app.modules.knowledge.embeddings import LocalHashEmbeddingProvider
+from app.ai.after_sale_queries import is_short_return_policy, return_reason_context
+from app.ai.context import read_context, resolve_reference, derive_context
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_ROUTES_PATH = (
@@ -75,6 +77,14 @@ class QueryAnalysis(BaseModel):
     description: str
     entities: QueryEntities
     candidates: list[IntentCandidate] = Field(default_factory=list)
+    routing_decision: str = "legacy"
+    routing_reason: str | None = None
+    embedding_intents: list[IntentName] = Field(default_factory=list)
+    llm_intents: list[IntentName] = Field(default_factory=list)
+    intent_evidence: dict[str, str] = Field(default_factory=dict)
+    clarification_question: str | None = None
+    resolved_query: str | None = None
+    context_clarification: str | None = None
 
 
 class IntentEmbeddingProvider(Protocol):
@@ -255,7 +265,8 @@ class QueryPreprocessor:
         latest_message = messages[-1]
         original_query = str(latest_message.content)
         normalized_query = normalize_query(original_query)
-        routing_query = build_routing_query(messages, normalized_query)
+        resolved_query, context_clarification = resolve_reference(normalized_query, read_context(messages))
+        routing_query = build_routing_query(messages, resolved_query)
 
         (
             primary_intent,
@@ -265,15 +276,27 @@ class QueryPreprocessor:
             candidates,
         ) = self.intent_router.route(routing_query)
 
+        router_source = "semantic_router"
+        policy_description = None
+        if is_short_return_policy(normalized_query):
+            if return_reason_context(messages) is not None:
+                primary_intent = IntentName.AFTER_SALE
+                router_source = "after_sale_context"
+                policy_description = "用户正在补充已提出的退货申请原因。"
+            else:
+                primary_intent = IntentName.KNOWLEDGE_INQUIRY
+                router_source = "policy_topic"
+                policy_description = "用户正在咨询七天无理由退货规则，需要检索知识库后回答。"
+
         clause_intents = self._route_compound_query(normalized_query)
         secondary_intents = merge_secondary_intents(
             primary_intent,
             clause_intents,
         )
 
-        entities = extract_entities(normalized_query, primary_intent)
+        entities = extract_entities(resolved_query, primary_intent)
         optimized_query = optimize_query(
-            normalized_query,
+            resolved_query,
             primary_intent,
             secondary_intents,
             entities,
@@ -281,6 +304,8 @@ class QueryPreprocessor:
 
         return QueryAnalysis(
             original_query=original_query,
+            resolved_query=resolved_query,
+            context_clarification=context_clarification,
             normalized_query=normalized_query,
             routing_query=routing_query,
             optimized_query=optimized_query,
@@ -288,9 +313,9 @@ class QueryPreprocessor:
             secondary_intents=secondary_intents,
             similarity_score=round(similarity_score, 4),
             route_margin=round(route_margin, 4),
-            router_source="semantic_router",
+            router_source=router_source,
             embedding_model=self.intent_router.embedding_provider.model_name,
-            description=self.intent_router.description_for(primary_intent),
+            description=policy_description or self.intent_router.description_for(primary_intent),
             entities=entities,
             candidates=candidates,
         )
@@ -333,7 +358,7 @@ def build_routing_query(
 ) -> str:
     """只在当前问题依赖上文时，为语义路由补充最近一轮上下文。"""
 
-    if not query_needs_context(normalized_query):
+    if not query_needs_context(normalized_query) and return_reason_context(messages) is None:
         return normalized_query
 
     historical_messages = list(messages[:-1])
@@ -412,15 +437,17 @@ def extract_entities(query: str, intent: IntentName) -> QueryEntities:
 
 
 def extract_order_id(query: str, intent: IntentName) -> str | None:
-    explicit_match = re.search(r"订单(?:号|编号)?\s*[:：#-]?\s*(\d{5})", query)
-    if explicit_match:
-        return explicit_match.group(1)
+    current = derive_context([HumanMessage(content=query)])
+    if current.order is not None:
+        return current.order.value
+    if re.search(r"不是|不查|别查|不要查|取消查询", query):
+        return None
 
     order_related_intents = {IntentName.ORDER_INQUIRY, IntentName.AFTER_SALE}
     if intent in order_related_intents:
-        standalone_match = re.search(r"(?<!\d)(\d{5})(?!\d)", query)
-        if standalone_match:
-            return standalone_match.group(1)
+        standalone_ids = set(re.findall(r"(?<!\d)(\d{5})(?!\d)", query))
+        if len(standalone_ids) == 1:
+            return next(iter(standalone_ids))
     return None
 
 

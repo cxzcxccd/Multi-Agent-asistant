@@ -3,6 +3,90 @@ import type { Page, Route } from '@playwright/test';
 
 const conversationId = '11111111-1111-4111-8111-111111111111';
 
+test('知识库读取后端正文并自动更新，失败保留上次内容', async ({ page }) => {
+  let revision = 1;
+  let offline = false;
+  let requests = 0;
+  const snapshot = () => ({
+    total_documents: 1,
+    total_chunks: 1,
+    revision: String(revision),
+    documents: [
+      {
+        document_key: 'actual_returns',
+        title: '当前退换货资料',
+        category: 'return_policy',
+        document_versions: [String(revision)],
+        updated_at: '2026-10-12T07:00:00Z',
+        chunks: [
+          {
+            id: 1,
+            document_key: 'actual_returns',
+            title: '当前退换货资料',
+            category: 'return_policy',
+            section: '真实规则章节',
+            content: `**实际正文第${revision}版**\n\n原文：https://example.com/policy`,
+            source: 'actual_returns.md#真实规则章节',
+            position: 0,
+            document_version: String(revision),
+            content_hash: String(revision),
+            updated_at: '2026-10-12T07:00:00Z',
+          },
+        ],
+      },
+    ],
+  });
+  await page.route('**/api/staff/knowledge/documents', async (route) => {
+    requests += 1;
+    if (offline) {
+      await route.fulfill({ status: 503, json: { detail: '服务不可用' } });
+      return;
+    }
+    const etag = `"${revision}"`;
+    if (route.request().headers()['if-none-match'] === etag) {
+      await route.fulfill({
+        status: 304,
+        headers: { ETag: etag, 'Access-Control-Expose-Headers': 'ETag' },
+        body: '',
+      });
+      return;
+    }
+    await route.fulfill({
+      json: snapshot(),
+      headers: { ETag: etag, 'Access-Control-Expose-Headers': 'ETag' },
+    });
+  });
+  await login(page, 'staff');
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  await page.getByRole('tab', { name: '知识库', exact: true }).click();
+  const library = page.getByRole('region', { name: '实时知识库' });
+  await expect(library).toContainText('1 份文档');
+  await library.getByText('真实规则章节', { exact: true }).click();
+  await expect(library).toContainText('实际正文第1版');
+  await expect(library).toContainText('actual_returns:0');
+  revision = 2;
+  await expect(library).toContainText('实际正文第2版', { timeout: 12000 });
+  await expect(library).not.toContainText('实际正文第1版');
+  await library.getByRole('button', { name: '刷新知识库' }).click();
+  await expect(library.getByRole('button', { name: '刷新知识库' })).toBeEnabled();
+  await expect(library).toContainText('实际正文第2版');
+  offline = true;
+  await library.getByRole('button', { name: '刷新知识库' }).click();
+  await expect(library.getByRole('alert')).toContainText('上次成功同步');
+  await expect(library).toContainText('实际正文第2版');
+  offline = false;
+  await library.getByLabel('搜索知识库').fill('不存在的内容');
+  await expect(library).toContainText('没有匹配的文档');
+  await library.getByLabel('搜索知识库').fill('实际正文');
+  await expect(library).toContainText('当前退换货资料');
+  await page.getByRole('link', { name: '客服工作台' }).click();
+  const previous = requests;
+  await page.waitForTimeout(5500);
+  expect(requests).toBe(previous);
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  await expect.poll(() => requests).toBeGreaterThan(previous);
+});
+
 test('买家可以保存、重新读取和删除跨会话购物偏好', async ({ page }) => {
   let saved = '';
   await page.route('**/api/memory/preferences', async (route) => {
@@ -92,6 +176,8 @@ async function returnReply(
   reply: string,
   toolNames: string[] = [],
   toolResults?: Array<{ name: string; output: unknown }>,
+  confirmation?: Record<string, unknown>,
+  telemetry?: Record<string, unknown>,
 ) {
   // 模拟 SSE 响应，只验证浏览器是否真的处理事件流，不消耗模型额度。
   const request: ChatRequestBody = route.request().postDataJSON();
@@ -143,6 +229,7 @@ async function returnReply(
     user_message: userMessage,
     assistant_message: assistantMessage,
     run: {
+      telemetry,
       model_calls: toolNames.length ? 2 : 1,
       tool_rounds: toolNames.length ? 1 : 0,
       tool_calls: toolNames.length,
@@ -223,7 +310,19 @@ async function returnReply(
   if (secondPart) {
     events.push(createSseEvent('delta', { content: secondPart }));
   }
-  events.push(createSseEvent('complete', response));
+  events.push(
+    createSseEvent(
+      confirmation ? 'confirmation_required' : 'complete',
+      confirmation
+        ? {
+            ...response,
+            mode: 'awaiting_confirmation',
+            assistant_message_id: assistantMessageId,
+            confirmation,
+          }
+        : response,
+    ),
+  );
 
   await route.fulfill({
     status: 200,
@@ -237,6 +336,66 @@ function createSseEvent(name: string, data: unknown): string {
   return `event: ${name}\ndata: ${jsonData}\n\n`;
 }
 
+test('推荐链接打开新增商品详情，返回时保留会话和草稿', async ({ page, context }) => {
+  const product = {
+    id: 'p13',
+    name: 'ROG SWIFT OLED PG259QWS Ace',
+    category: '显示器',
+    series: 'OLED 电竞显示器',
+    price: 8999,
+    stock: 10,
+    specs: ['280Hz'],
+    description: '新增的显示器',
+    color: '黑色',
+    source: '手动录入',
+  };
+  await page.route('**/api/products**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith('/categories')) await route.fulfill({ json: ['显示器'] });
+    else if (pathname.endsWith('/p13')) await route.fulfill({ json: product });
+    else if (pathname.endsWith('/p99'))
+      await route.fulfill({ status: 404, json: { detail: '未找到商品：p99' } });
+    else await route.fulfill({ json: { items: [product], total: 1, offset: 0, limit: 50 } });
+  });
+  let calls = 0;
+  await page.route('**/api/chat/stream', async (route) => {
+    calls += 1;
+    await returnReply(
+      route,
+      calls === 1 ? `推荐 ${product.name}。` : `可以查看 [商品详情](#shop?product=p13)。`,
+      ['get_product'],
+      [{ name: 'get_product', output: { success: true, product } }],
+    );
+  });
+  await login(page);
+  await send(page, '推荐一款显示器');
+  const link = page.getByRole('link', { name: `查看 ${product.name} 商品详情` });
+  await expect(link).toHaveAttribute('href', '#shop?product=p13');
+  await page.getByLabel('输入咨询内容').fill('我还想问保修');
+  await link.click();
+  await expect(page).toHaveURL(/#shop\?product=p13$/);
+  await expect(page.getByRole('dialog', { name: '商品详情' })).toContainText('当前库存 10 件');
+  expect(context.pages()).toHaveLength(1);
+  expect(calls).toBe(1);
+  await page
+    .getByRole('dialog', { name: '商品详情' })
+    .getByRole('button', { name: '继续逛店' })
+    .click();
+  await page.getByRole('button', { name: '返回当前咨询' }).click();
+  await expect(page.getByLabel('输入咨询内容')).toHaveValue('我还想问保修');
+  await expect(link).toBeVisible();
+  await send(page, '查看商品详情');
+  const markdownLink = page.getByRole('log').getByRole('link', { name: '商品详情', exact: true });
+  await expect(markdownLink).not.toHaveAttribute('target', '_blank');
+  await markdownLink.click();
+  await page.reload();
+  await expect(page.getByRole('dialog', { name: '商品详情' })).toContainText(product.name);
+  await page.goto('/#shop?product=p99');
+  await expect(page.getByRole('dialog', { name: '商品详情' }).getByRole('alert')).toContainText(
+    '未找到商品',
+  );
+});
+
 async function returnStreamError(route: Route, status: number, detail: string) {
   const body = createSseEvent('error', { status, detail });
   await route.fulfill({
@@ -245,6 +404,61 @@ async function returnStreamError(route: Route, status: number, detail: string) {
     body,
   });
 }
+
+test('执行详情显示真实模型 Token 和 MCP 调用，刷新保留统计并兼容旧记录', async ({ page }) => {
+  let missing = false;
+  await page.route('**/api/staff/runtime/status', (route) =>
+    route.fulfill({
+      json: {
+        model_name: 'configured-model',
+        model_configured: true,
+        mcp_enabled: ['catalog', 'orders'],
+      },
+    }),
+  );
+  await page.route('**/api/chat/stream', async (route) => {
+    await returnReply(route, '已查询耳机', ['get_product'], [], undefined, {
+      model_name: 'configured-model',
+      model_names: ['provider-model'],
+      token_usage: missing ? null : { input_tokens: 1000, output_tokens: 234, total_tokens: 1234 },
+      usage_calls: missing ? 0 : 2,
+      model_calls: 2,
+      mcp_enabled: ['catalog', 'orders'],
+      mcp_calls: missing
+        ? []
+        : [{ server: 'catalog', tool: 'get_product', calls: 2, successes: 1 }],
+    });
+  });
+  await login(page, 'admin');
+  await send(page, '查看耳机');
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  const model = page.locator('.run-model-metadata');
+  const mcp = page.locator('.run-mcp-metadata');
+  await expect(model).toContainText('provider-model / 1,234 Token');
+  await expect(model).toContainText('输入 1,000 · 输出 234');
+  await expect(mcp).toContainText('2 次调用 · 1 次成功');
+  await expect(mcp).toContainText('商品 / get_product：1/2 成功');
+  await page.reload();
+  await expect(model).toContainText('1,234 Token');
+  await expect(mcp).toContainText('2 次调用');
+  missing = true;
+  await page.getByRole('link', { name: '买家客服' }).click();
+  await send(page, '再查一件');
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  await expect(model).toContainText('服务未返回用量');
+  await expect(model).not.toContainText('0 Token');
+  await expect(mcp).toContainText('本次未调用');
+  // 旧浏览器记录缺少 telemetry，不应伪造 Token 或显示“未接入”。
+  await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem('geek-select-demo-v1')!);
+    for (const run of snapshot.runs) delete run.telemetry;
+    localStorage.setItem('geek-select-demo-v1', JSON.stringify(snapshot));
+  });
+  await page.reload();
+  await expect(model).toContainText('configured-model');
+  await expect(model).toContainText('历史记录未采集用量');
+  await expect(mcp).toContainText('已启用商品、订单 MCP');
+});
 
 test('登录身份决定可访问的工作空间', async ({ page }) => {
   await login(page);
@@ -288,40 +502,177 @@ test('管理员可以访问全部工作空间并选择买家使用 AI 客服', a
   await expect(page.getByText('平台管理员 · 管理员')).toBeVisible();
 });
 
-test('客服可以运行真实 RAG 检索评测并查看指标', async ({ page }) => {
-  await page.route('**/api/staff/knowledge/evaluate', async (route) => {
+test('评测预览加载新版100条历史、真实指标与答案，刷新后仍可查看', async ({ page }) => {
+  const rows = Array.from({ length: 100 }, (_, i) => ({
+    id: `JDDC-${i + 1}`,
+    question: i === 0 ? '耳机进水可以免费保修吗？' : `案例问题${i + 1}`,
+    expected_sources: i < 4 ? ['jd_warranty.md#保修范围'] : [],
+    retrieved_sources: ['jd_warranty.md#保修范围'],
+    first_relevant_rank: i < 4 ? 1 : null,
+    passed: i < 4,
+    should_answer: i < 4,
+    reference_answer: '参考答案',
+    retrieval_latency_ms: 40,
+    retrieval_mode: 'hybrid',
+    retrieved_chunks: [
+      {
+        document: '官方保修规则',
+        document_key: 'jd_warranty',
+        chunk_id: 'jd_warranty:0',
+        section: '保修范围',
+        source: 'jd_warranty.md#保修范围',
+        content: '知识块实际正文',
+        score: 0.03,
+        score_type: 'rrf',
+      },
+    ],
+  }));
+  const report = {
+    evaluation_id: 'saved100',
+    cases: 100,
+    answerable_cases: 4,
+    unanswerable_cases: 96,
+    strategy: 'hybrid',
+    retrieval_backend: 'MilvusKnowledgeVectorStore',
+    recall_at_k: 0.6339,
+    recall_at_1: 0.375,
+    recall_at_3: 0.5982,
+    recall_at_5: 0.6339,
+    mrr: 0.7083,
+    rejection_accuracy: 0,
+    false_retrieval_rate: 1,
+    average_latency_ms: 42,
+    retrieval_latency_p50_ms: 40,
+    retrieval_latency_p95_ms: 88,
+    results: rows,
+  };
+  const summary = {
+    id: 'saved100',
+    created_at: '2026-10-12T07:00:00Z',
+    dataset_name: 'JDDC 当前知识库 100 条',
+    cases: 100,
+    cases_sha256: 'abc100',
+    annotation_status: 'ai_verified（尚非人工金标准）',
+    has_retrieval: true,
+    has_runtime: true,
+  };
+  const runtime = {
+    cases: 100,
+    model: 'test-model',
+    workers: 4,
+    created_at: summary.created_at,
+    retrieval_backend: '真实BGE+Milvus',
+    runtime_error_cases: 0,
+    evaluation_failure_cases: 0,
+    quality_cases: 100,
+    tool_selection_correct: 45,
+    tool_selection_cases: 100,
+    tool_selection_accuracy: 0.45,
+    parameter_valid_cases: 16,
+    parameter_cases: 87,
+    parameter_accuracy: 16 / 87,
+    task_successes: 13,
+    task_completion_rate: 0.13,
+    end_to_end_p95_ms: 7700,
+    usage_cases: 100,
+    generation_usage: { input_tokens: 200, output_tokens: 100, total_tokens: 300 },
+    quality_averages: {
+      correctness: 0.88,
+      faithfulness: 0.82,
+      completeness: 0.88,
+      citation_correctness: 0.93,
+    },
+    average_request_cost: null,
+    cost_currency: null,
+  };
+  let rerun = false;
+  await page.route('**/api/staff/knowledge/evaluations', async (route) => {
     await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        cases: 12,
-        recall_at_k: 0.95,
-        mrr: 0.95,
-        rejection_accuracy: 1,
-        average_latency_ms: 2.5,
-        results: [
-          {
-            id: 'RAG-001',
-            question: '耳机进水可以免费保修吗？',
-            expected_sources: ['warranty_policy.md#保修范围'],
-            retrieved_sources: ['warranty_policy.md#保修范围'],
-            first_relevant_rank: 1,
-            passed: true,
-          },
-        ],
-      }),
+      json: {
+        records: rerun
+          ? [
+              { ...summary, id: 'new100', created_at: '2026-10-12T08:00:00Z', has_runtime: false },
+              summary,
+            ]
+          : [summary],
+      },
     });
   });
-
+  await page.route('**/api/staff/knowledge/evaluations/*', async (route) => {
+    const id = route.request().url().split('/').pop();
+    await route.fulfill({
+      json: {
+        ...summary,
+        id,
+        retrieval: report,
+        runtime: id === 'saved100' ? runtime : null,
+        runtime_results:
+          id === 'saved100'
+            ? [
+                {
+                  id: 'JDDC-1',
+                  query: rows[0].question,
+                  answer: '实际模型回答示例',
+                  sources: [],
+                  expected_tool: 'search_knowledge',
+                  tool_selection_correct: true,
+                  parameters_correct: true,
+                  task_passed: true,
+                  end_to_end_latency_ms: 800,
+                  quality: {
+                    correctness: 0.9,
+                    faithfulness: 0.8,
+                    completeness: 0.9,
+                    citation_correctness: 1,
+                    reason: '评审依据示例',
+                  },
+                  calls: [
+                    {
+                      name: 'search_knowledge',
+                      args: { query: '进水保修' },
+                      parameters_correct: true,
+                    },
+                  ],
+                  error: null,
+                  evaluation_error: null,
+                },
+              ]
+            : [],
+      },
+    });
+  });
+  await page.route('**/api/staff/knowledge/evaluate', async (route) => {
+    rerun = true;
+    await route.fulfill({ json: { ...report, evaluation_id: 'new100' } });
+  });
   await login(page, 'staff');
   await page.getByRole('link', { name: '开发者与评测' }).click();
   await page.getByRole('tab', { name: '评测预览' }).click();
+  await expect(page.locator('.cases-panel tbody tr')).toHaveCount(100);
+  await expect(page.locator('.metric-card').filter({ hasText: 'Recall@3' })).toContainText(
+    '59.82%',
+  );
+  await expect(page.locator('.metric-card').filter({ hasText: 'Recall@5' })).toContainText(
+    '63.39%',
+  );
+  await expect(page.getByText('Prompt V1 与 V2')).toHaveCount(0);
+  const first = page.locator('.cases-panel tbody tr').first();
+  await first.getByText('查看详情', { exact: true }).click();
+  await expect(first).toContainText('实际模型回答示例');
+  await expect(first).toContainText('jd_warranty:0');
+  await page.getByLabel('筛选评测结果').selectOption('failed');
+  await expect(page.locator('.cases-panel tbody tr')).toHaveCount(96);
+  await page.reload();
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  await page.getByRole('tab', { name: '评测预览' }).click();
+  await expect(page.locator('.cases-panel tbody tr')).toHaveCount(100);
   await page.getByRole('button', { name: '运行 RAG 评测' }).click();
-
-  await expect(page.getByText('真实检索评测完成，结果已更新。')).toBeVisible();
-  await expect(page.getByText('Recall@3').first()).toBeVisible();
-  await expect(page.locator('.metric-card').filter({ hasText: 'Recall@3' })).toContainText('95%');
-  await expect(page.getByText('warranty_policy.md#保修范围')).toBeVisible();
+  await expect(page.getByText('新版 100 条检索评测完成，报告已保存。')).toBeVisible();
+  await expect(page.getByLabel('评测轮次')).toHaveValue('new100');
+  await page.getByLabel('评测轮次').selectOption('saved100');
+  await expect(page.locator('.metric-card').filter({ hasText: '工具选择准确率' })).toContainText(
+    '45.00%',
+  );
 });
 
 test('你是谁和无商品关键词的追问都调用后端，并沿用会话', async ({ page }) => {
@@ -418,10 +769,23 @@ test('知识检索结果显示在执行时间线和回复来源中', async ({ pa
           name: 'search_knowledge',
           output: {
             success: true,
+            query: '耳机拆封后还能退货吗？',
+            retrieval_mode: 'hybrid',
             answer_context: '签收后 7 天内，商品保持完好时可以申请。',
             sources: [
               {
                 document: '退换货规则',
+                document_key: 'return_policy',
+                chunk_id: 'return_policy:2',
+                chunk_position: 2,
+                document_version: '1',
+                rank: 1,
+                score_type: 'rrf',
+                keyword_score: 3.5,
+                keyword_rank: 1,
+                vector_score: 0.82,
+                vector_rank: 2,
+                rrf_score: 0.032522,
                 category: 'return_policy',
                 section: '七天无理由退货',
                 content: '签收后 7 天内，商品保持完好、配件和包装齐全时可以申请。',
@@ -443,6 +807,18 @@ test('知识检索结果显示在执行时间线和回复来源中', async ({ pa
   await page.getByText('参考了 1 份资料').click();
   await expect(page.getByText('退换货规则 · 七天无理由退货')).toBeVisible();
   await expect(page.getByText('命中 1 条资料')).toBeVisible();
+  await switchToStaff(page);
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  const retrieval = page.getByRole('region', { name: 'RAG 召回详情' });
+  await expect(retrieval).toContainText('return_policy:2');
+  await expect(retrieval).toContainText('return_policy.md#七天无理由退货');
+  await expect(retrieval).toContainText('0.900000（RRF）');
+  await expect(retrieval).toContainText('BM25 + 向量混合检索');
+  await retrieval.getByText('查看知识块正文', { exact: true }).click();
+  await expect(retrieval.locator('.rag-chunk-content')).toContainText('配件和包装齐全');
+  await page.reload();
+  await page.getByRole('link', { name: '开发者与评测' }).click();
+  await expect(page.getByRole('region', { name: 'RAG 召回详情' })).toContainText('return_policy:2');
 });
 
 test('询问人工智能或真人身份时仍然调用后端', async ({ page }) => {
@@ -672,6 +1048,173 @@ test('停止后不显示迟到回复，可以继续发送新消息', async ({ pa
   await send(page, '你好');
   await expect(log.getByText('新的后端回复。')).toBeVisible();
   await expect(log.getByText('已经停止的迟到回复。')).toHaveCount(0);
+});
+
+test('退货先展示空原因草稿，用户补充并确认后才转交人工', async ({ page }) => {
+  const createdAt = new Date().toISOString();
+  const requestId = '33333333-3333-4333-8333-333333333333';
+  const finalReason = '左耳没有声音，更换设备后仍然如此。';
+  let stage = 'draft';
+  const actions: string[] = [];
+  const requestBody = () => ({
+    id: requestId,
+    buyer_id: 'A',
+    order_id: '10002',
+    request_type: '退货',
+    reason: finalReason,
+    status: stage,
+    version: stage === 'draft' ? 1 : 2,
+    created_at: createdAt,
+    updated_at: createdAt,
+    operations: [],
+  });
+  await page.route('**/api/chat/stream', async (route) => {
+    const request = route.request().postDataJSON() as ChatRequestBody;
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: request.message,
+      created_at: createdAt,
+    };
+    const assistantId = crypto.randomUUID();
+    // 即使没有前面的工具状态事件，也必须从暂停事件展示草稿。
+    await route.fulfill({
+      contentType: 'text/event-stream',
+      body:
+        createSseEvent('start', {
+          conversation_id: conversationId,
+          mode: 'ai',
+          user_message: userMessage,
+          assistant_message_id: assistantId,
+        }) +
+        createSseEvent('confirmation_required', {
+          conversation_id: conversationId,
+          mode: 'awaiting_confirmation',
+          user_message: userMessage,
+          assistant_message_id: assistantId,
+          confirmation: {
+            type: 'after_sale_draft',
+            requires_confirmation: true,
+            draft: { order_id: '10002', request_type: '退货', reason: '' },
+          },
+          run: { model_calls: 1, tool_rounds: 1, tool_calls: 1, task_results: [] },
+        }),
+    });
+  });
+  await page.route('**/api/after-sales/drafts', async (route) => {
+    actions.push('create');
+    expect(route.request().postDataJSON().reason).toBe(finalReason);
+    await route.fulfill({ status: 201, json: requestBody() });
+  });
+  await page.route(`**/api/after-sales/drafts/${requestId}/submit`, async (route) => {
+    actions.push('submit');
+    stage = 'pending';
+    await route.fulfill({ json: requestBody() });
+  });
+  await page.route(`**/api/conversations/${conversationId}/resume`, async (route) => {
+    actions.push('resume');
+    expect(route.request().postDataJSON()).toEqual({
+      action: 'confirm',
+      draft: { order_id: '10002', request_type: '退货', reason: finalReason },
+    });
+    await route.fulfill({
+      json: {
+        conversation_id: conversationId,
+        mode: 'ai',
+        assistant_message: {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '## 已转交人工\n申请已提交，正在等待人工客服审核。',
+          created_at: createdAt,
+        },
+      },
+    });
+  });
+  await login(page);
+  await send(page, '订单10002申请退货');
+  const draft = page.locator('.draft-card');
+  await expect(draft).toContainText('待补充原因');
+  await expect(draft.getByLabel('问题描述')).toHaveValue('');
+  await expect(draft.getByRole('button', { name: '确认申请内容' })).toBeDisabled();
+  await expect(page.getByRole('log').locator('.answer-module-blue')).toContainText('草稿已准备');
+  await expect(page.getByRole('log').locator('.answer-module-amber')).toContainText('需要补充');
+  await expect(page.getByRole('log').locator('.answer-module-green')).toContainText('下一步');
+  expect(actions).toEqual([]);
+  await page.reload();
+  await expect(draft).toBeVisible();
+  await draft.getByLabel('问题描述').fill('坏了');
+  await expect(draft.getByRole('button', { name: '确认申请内容' })).toBeDisabled();
+  await draft.getByLabel('问题描述').fill(finalReason);
+  await draft.getByRole('button', { name: '确认申请内容' }).click();
+  const confirmation = page.getByRole('dialog', { name: '确认提交售后申请' });
+  await expect(confirmation).toContainText(finalReason);
+  await expect(confirmation.getByRole('button', { name: '提交申请', exact: true })).toBeDisabled();
+  expect(actions).toEqual([]);
+  await confirmation.getByRole('button', { name: '返回修改' }).click();
+  await draft.getByRole('button', { name: '确认申请内容' }).click();
+  await confirmation.getByRole('checkbox').check();
+  await confirmation.getByRole('button', { name: '提交申请', exact: true }).click();
+  await expect(page.getByText('待人工审核', { exact: true })).toBeVisible();
+  expect(actions).toEqual(['create', 'submit', 'resume']);
+});
+
+test('取消草稿立即显示处理状态，成功恢复咨询，失败保留草稿', async ({ page }) => {
+  let requests = 0;
+  let release: (() => void) | undefined;
+  let fail = true;
+  await page.route('**/api/chat/stream', async (route) => {
+    await returnReply(route, '', [], [], {
+      type: 'after_sale_draft',
+      requires_confirmation: true,
+      draft: { order_id: '10002', request_type: '退货', reason: '七天无理由' },
+    });
+  });
+  await page.route(`**/api/conversations/${conversationId}/resume`, async (route) => {
+    requests += 1;
+    expect(route.request().postDataJSON().action).toBe('cancel');
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (fail) await route.fulfill({ status: 503, json: { detail: '暂时无法取消，请重试' } });
+    else
+      await route.fulfill({
+        json: {
+          conversation_id: conversationId,
+          mode: 'ai',
+          assistant_message: {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: '售后申请草稿已取消，没有提交售后申请。',
+            created_at: new Date().toISOString(),
+          },
+        },
+      });
+  });
+  await page.route('**/api/after-sales/drafts**', () => {
+    throw new Error('取消不应创建或提交售后申请');
+  });
+  await login(page);
+  await send(page, '订单10002退货');
+  const draft = page.locator('.draft-card');
+  await draft.getByRole('button', { name: '取消草稿', exact: true }).click();
+  const cancelling = draft.getByRole('button', { name: '正在取消…', exact: true });
+  await expect(cancelling).toBeDisabled();
+  await expect(draft.getByRole('button', { name: '确认申请内容' })).toBeDisabled();
+  await expect(draft.getByLabel('问题描述')).toBeDisabled();
+  await expect.poll(() => Boolean(release)).toBe(true);
+  expect(requests).toBe(1);
+  release!();
+  await expect(page.getByRole('log')).toContainText('暂时无法取消，请重试');
+  await expect(draft.getByRole('button', { name: '取消草稿', exact: true })).toBeEnabled();
+  fail = false;
+  release = undefined;
+  await draft.getByRole('button', { name: '取消草稿', exact: true }).click();
+  await expect.poll(() => Boolean(release)).toBe(true);
+  release!();
+  await expect(draft).toHaveCount(0);
+  await expect(page.getByLabel('输入咨询内容')).toBeEnabled();
+  await expect(page.getByRole('log')).toContainText('售后申请草稿已取消，没有提交售后申请。');
+  expect(requests).toBe(2);
 });
 
 test('售后确认与客服审核调用后端接口', async ({ page }) => {

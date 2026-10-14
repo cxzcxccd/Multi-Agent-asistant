@@ -173,7 +173,7 @@ test('管理员可以新增商品，编号自动分配', async ({ page }) => {
   await page.getByTestId('add-product').click();
   const dialog = page.getByRole('dialog', { name: '新增商品' });
   await dialog.getByLabel('商品名称').fill('测试新品耳机');
-  await dialog.getByLabel('分类').selectOption('耳机');
+  await dialog.getByLabel('分类').fill('  键盘  ');
   await dialog.getByLabel('系列').fill('TestSeries');
   await dialog.getByLabel('价格（元）').fill('199');
   await dialog.getByLabel('库存（件）').fill('20');
@@ -187,6 +187,9 @@ test('管理员可以新增商品，编号自动分配', async ({ page }) => {
   await expect(page.getByTestId('admin-row-p13')).toContainText('¥199');
   await expect(page.getByTestId('admin-notice')).toContainText('已新增商品 p13');
   await expect(page.locator('.admin-table tbody tr')).toHaveCount(13);
+  await expect(page.getByTestId('admin-row-p13')).toContainText('键盘');
+  await page.getByTestId('add-product').click();
+  await expect(page.locator('#product-categories option[value="键盘"]')).toHaveCount(1);
 });
 
 test('管理员可以编辑商品字段', async ({ page }) => {
@@ -257,4 +260,43 @@ test('客服看不到商品管理入口，直接访问地址会被重定向', as
   await page.goto('/#admin');
   await expect(page.getByRole('heading', { name: '商品与库存管理' })).toHaveCount(0);
   await expect(page).toHaveURL(/#workbench/);
+});
+
+test('编辑商品可上传、预览、保存和移除图片', async ({ page }) => {
+  const imagePath = '/api/products/images/' + 'a'.repeat(32) + '.png';
+  await page.route('**/api/products/images', async (route) => {
+    await route.fulfill({ status: 201, json: { image_url: imagePath } });
+  });
+  await page.route('**/api/products/images/*.png', async (route) => {
+    await route.fulfill({
+      contentType: 'image/png',
+      body: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aHoQAAAAASUVORK5CYII=',
+        'base64',
+      ),
+    });
+  });
+  await login(page);
+  await openAdmin(page);
+  await page.getByTestId('admin-row-p01').getByTitle('编辑商品').click();
+  let dialog = page.getByRole('dialog', { name: '编辑商品 p01' });
+  await dialog
+    .getByLabel('商品图片')
+    .setInputFiles({
+      name: 'monitor.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('test-image'),
+    });
+  await expect(dialog.getByAltText('商品图片预览')).toBeVisible();
+  await dialog.getByTestId('save-product').click();
+  await expect(dialog).not.toBeVisible();
+  expect(catalog[0].image_url).toBe(imagePath);
+  await page.getByTestId('admin-row-p01').getByTitle('编辑商品').click();
+  dialog = page.getByRole('dialog', { name: '编辑商品 p01' });
+  await expect(dialog.getByAltText('商品图片预览')).toBeVisible();
+  await dialog.getByRole('button', { name: '移除图片' }).click();
+  await expect(dialog.getByAltText('商品图片预览')).toHaveCount(0);
+  await dialog.getByTestId('save-product').click();
+  await expect(dialog).not.toBeVisible();
+  expect(catalog[0].image_url).toBe('');
 });

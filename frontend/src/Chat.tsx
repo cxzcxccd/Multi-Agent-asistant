@@ -38,6 +38,7 @@ import type { Conversation, Message } from './types';
 import { buyerPreferences } from './api';
 import type { BuyerId } from './types';
 import MarkdownMessage from './MarkdownMessage';
+import { productHref } from './productLinks';
 
 function MemoryPreferencesEditor({ buyerId }: { buyerId: BuyerId }) {
   const [open, setOpen] = useState(false);
@@ -118,15 +119,22 @@ export function MessageFeed({
     scroll = useRef<HTMLDivElement>(null);
   const last = conversation.messages.at(-1);
   useEffect(() => {
-    if (active && scroll.current)
+    if (!active || !scroll.current) return;
+    const draftCard = scroll.current.querySelector<HTMLElement>('.draft-card');
+    if (draftCard && last?.draftId === conversation.draft?.id) {
+      // 新草稿从卡片顶部开始展示；编辑原因时保持用户当前的滚动位置。
+      scroll.current.scrollTop +=
+        draftCard.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - 12;
+    } else {
       scroll.current.scrollTop =
         conversation.messages.length === 1 ? 0 : scroll.current.scrollHeight;
+    }
   }, [
     conversation.id,
     conversation.messages.length,
     last?.text,
     last?.streaming,
-    conversation.draft,
+    conversation.draft?.id,
     s.requests,
     active,
   ]);
@@ -271,7 +279,7 @@ function MessageBubble({
         <div
           className={`message-text ${user ? '' : 'markdown-content'} ${m.streaming ? 'streaming' : ''}`}
         >
-          {user ? m.text : <MarkdownMessage content={m.text} />}
+          {user ? m.text : <MarkdownMessage content={m.text} modular={m.role === 'assistant'} />}
         </div>
         {m.products?.length ? (
           <div className="product-grid message-products">
@@ -284,6 +292,15 @@ function MessageBubble({
             ))}
           </div>
         ) : null}
+        {!!m.productLinks?.length && (
+          <div className="chat-product-links" aria-label="商品详情链接">
+            {m.productLinks.map((product) => (
+              <a key={product.id} href={productHref(product.id)}>
+                查看 {product.name} 商品详情 <ArrowRight size={14} />
+              </a>
+            ))}
+          </div>
+        )}
         {m.orders?.map((id) => (
           <OrderCard
             key={id}
@@ -382,7 +399,7 @@ export default function Chat({ active = true }: { active?: boolean }) {
               <Headphones size={16} />
             )}
             {c.mode === 'awaiting_confirmation'
-              ? '工作流已暂停，请先确认或取消售后草稿。'
+              ? '请先查看草稿并补充申请原因，核对后确认转交人工。'
               : c.mode === 'waiting'
                 ? '正在等待人工接入，你可以继续补充问题。'
                 : '小周正在为你服务，AI 自动回复已暂停。'}
@@ -418,7 +435,7 @@ export default function Chat({ active = true }: { active?: boolean }) {
               开始新的咨询
             </button>
           ) : c.mode === 'awaiting_confirmation' ? (
-            <p className="muted">请在上方售后卡片中完成当前确认。</p>
+            <p className="muted">请在上方草稿中补充原因，核对后确认提交。</p>
           ) : (
             <form
               className="composer"

@@ -937,3 +937,8 @@
     font-size: 12px;
   }
 }
+
+.catalog-uploaded-photo {
+  object-fit: contain;
+  background-image: none;
+}

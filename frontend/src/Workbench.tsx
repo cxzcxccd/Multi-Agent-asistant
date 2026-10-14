@@ -320,7 +320,7 @@ function ApprovalList({ actorName }: { actorName: string }) {
               <div className="policy-reference">
                 <ShieldCheck size={16} />
                 <p>
-                  依据 POL-02：结合订单、商品状态与问题描述人工审核。批准后需继续指引客户处理退件。
+                  依据 POL-02：结合订单状态与申请原因人工审核，后续处理取消发货、物流拦截或退回等事项。
                 </p>
               </div>
               {r.status === 'pending' && (

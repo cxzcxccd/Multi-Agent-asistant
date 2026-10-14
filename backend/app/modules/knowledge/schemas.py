@@ -12,7 +12,7 @@ KnowledgeCategory = Literal[
     "payment_policy",
     "product_guide",
 ]
-RetrievalStrategy = Literal["vector", "keyword", "hybrid", "hybrid_rerank"]
+RetrievalStrategy = Literal["vector", "keyword", "hybrid", "hybrid_rerank", "hyde"]
 
 
 class KnowledgeChunk(BaseModel):
@@ -34,6 +34,12 @@ class KnowledgeChunk(BaseModel):
 
 
 class KnowledgeSearchItem(BaseModel):
+    document_key: str | None = None
+    chunk_id: str | None = None
+    chunk_position: int | None = Field(default=None, ge=0)
+    document_version: str | None = None
+    content_hash: str | None = None
+    rank: int | None = Field(default=None, ge=1)
     document: str
     category: KnowledgeCategory
     section: str
@@ -45,7 +51,25 @@ class KnowledgeSearchItem(BaseModel):
     score_type: Literal["bm25", "cosine", "rrf", "rerank"] | None = None
     keyword_rank: int | None = Field(default=None, ge=1)
     vector_rank: int | None = Field(default=None, ge=1)
+    hyde_score: float = Field(default=0, ge=0)
+    hyde_rank: int | None = Field(default=None, ge=1)
     rrf_score: float | None = Field(default=None, ge=0)
+
+
+class KnowledgeLibraryDocument(BaseModel):
+    document_key: str
+    title: str
+    category: KnowledgeCategory
+    document_versions: list[str]
+    updated_at: datetime | None
+    chunks: list[KnowledgeChunk]
+
+
+class KnowledgeLibraryResponse(BaseModel):
+    documents: list[KnowledgeLibraryDocument]
+    total_documents: int
+    total_chunks: int
+    revision: str
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -58,7 +82,13 @@ class KnowledgeSearchResponse(BaseModel):
         "hybrid",
         "hybrid_rerank",
         "keyword_fallback",
+        "hyde",
+        "hyde_fallback",
     ]
+    hyde_status: Literal["not_used", "used", "fallback", "skipped"] = "not_used"
+    hyde_latency_ms: float = 0
+    hyde_usage: dict[str, int] | None = None
+    hyde_error_type: str | None = None
 
 
 class KnowledgeIndexStatus(BaseModel):
@@ -81,10 +111,16 @@ class KnowledgeIndexResult(BaseModel):
 
 
 class RagEvaluationCaseResult(BaseModel):
+    hyde_status: str = "not_used"
+    hyde_latency_ms: float = 0
+    hyde_usage: dict[str, int] | None = None
+    hyde_error_type: str | None = None
     id: str
     question: str
     expected_sources: list[str]
     retrieved_sources: list[str]
+    retrieved_chunks: list[KnowledgeSearchItem] = Field(default_factory=list)
+    retrieval_mode: str | None = None
     first_relevant_rank: int | None
     retrieval_passed: bool = False
     passed: bool
@@ -120,6 +156,10 @@ class AnswerQualityScores(BaseModel):
 
 
 class RagEvaluationReport(BaseModel):
+    evaluation_id: str | None = None
+    created_at: str | None = None
+    dataset_name: str | None = None
+    cases_sha256: str | None = None
     strategy: RetrievalStrategy = "hybrid"
     retrieval_backend: str = "unknown"
     cases: int

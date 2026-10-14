@@ -24,6 +24,15 @@ from app.modules.orders.schemas import OrderStatus
 from app.modules.orders.service import OrderNotAccessibleError, OrderService
 
 
+# 这里校验的是售后诉求是否可受理；物流状态不决定人工审核是否批准。
+AFTER_SALE_ELIGIBLE_STATUSES = frozenset({
+    OrderStatus.PENDING_SHIPMENT,
+    OrderStatus.IN_TRANSIT,
+    OrderStatus.DELIVERED,
+    OrderStatus.COMPLETED,
+})
+
+
 class AfterSaleServiceError(RuntimeError):
     """售后业务异常的基类。"""
 
@@ -71,8 +80,7 @@ class AfterSaleService:
         except OrderNotAccessibleError as error:
             raise AfterSaleNotFoundError(str(error)) from error
 
-        eligible_statuses = {OrderStatus.DELIVERED, OrderStatus.COMPLETED}
-        if order.status not in eligible_statuses:
+        if order.status not in AFTER_SALE_ELIGIBLE_STATUSES:
             raise OrderNotEligibleForAfterSaleError(
                 "订单当前状态暂不支持创建售后申请"
             )

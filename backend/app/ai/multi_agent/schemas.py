@@ -6,6 +6,7 @@ from uuid import UUID
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.ai.telemetry import ModelUsage, RunTelemetry
 
 
 class AgentName(StrEnum):
@@ -46,6 +47,7 @@ class AgentTaskResult(BaseModel):
     tool_rounds: int = Field(default=0, ge=0)
     duration_ms: int = Field(default=0, ge=0)
     error: str | None = None
+    model_usage: list[ModelUsage] = Field(default_factory=list)
 
 
 class AgentPlan(BaseModel):
@@ -77,3 +79,4 @@ class AgentRunRecord(BaseModel):
     tool_calls: int = Field(default=0, ge=0)
     started_at: datetime
     completed_at: datetime
+    telemetry: RunTelemetry | None = None

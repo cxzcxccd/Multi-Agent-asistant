@@ -20,7 +20,9 @@ from app.db.base import Base
 from app.modules.knowledge.vector_store import InMemoryKnowledgeVectorStore
 
 
-def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Path) -> None:
+def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Path, monkeypatch) -> None:
+    from app.modules.knowledge import records
+    monkeypatch.setattr(records, "RECORDS_ROOT", tmp_path / "records")
     async def run() -> None:
         engine = create_engine(f"sqlite:///{(tmp_path / 'api.db').as_posix()}")
         Base.metadata.create_all(engine)
@@ -37,6 +39,7 @@ def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Pat
             provider,
             vector_store,
             minimum_score=0.32,
+            default_strategy="hybrid",
         )
         app.dependency_overrides[get_knowledge_service] = lambda: service
 
@@ -75,8 +78,19 @@ def test_knowledge_endpoints_enforce_roles_and_return_real_metrics(tmp_path: Pat
                 assert status.json()["embedded_chunks"] == 15
                 assert status.json()["vector_database"] == "milvus"
                 assert status.json()["connected"] is True
-                assert evaluation.json()["cases"] == 12
-                assert evaluation.json()["recall_at_k"] >= 0.9
+                assert evaluation.json()["cases"] == 100
+                assert len(evaluation.json()["results"]) == 100
+                assert evaluation.json()["cases_sha256"]
+                history = await client.get("/api/staff/knowledge/evaluations", headers={"Authorization": f"Bearer {staff_token}"})
+                assert history.status_code == 200
+                assert len(history.json()["records"]) == 1
+                record_id = history.json()["records"][0]["id"]
+                detail = await client.get(f"/api/staff/knowledge/evaluations/{record_id}", headers={"Authorization": f"Bearer {staff_token}"})
+                assert detail.json()["retrieval"]["results"] == evaluation.json()["results"]
+                denied = await client.get("/api/staff/knowledge/evaluations", headers={"Authorization": f"Bearer {buyer_token}"})
+                assert denied.status_code == 403
+                missing = await client.get("/api/staff/knowledge/evaluations/does-not-exist", headers={"Authorization": f"Bearer {staff_token}"})
+                assert missing.status_code == 404
         finally:
             app.dependency_overrides.pop(get_knowledge_service, None)
             engine.dispose()

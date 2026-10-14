@@ -9,6 +9,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 ALLOWED_CHECKPOINT_MODULES = [
+    ("app", "ai", "telemetry"),
+    ("app", "ai", "clarification"),
     ("app", "ai", "query_preprocessor"),
     ("app", "ai", "multi_agent", "schemas"),
 ]

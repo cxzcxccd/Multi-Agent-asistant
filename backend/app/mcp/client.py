@@ -15,6 +15,7 @@ from app.ai.tools.catalog import get_catalog_tools
 
 class CatalogMcpClient:
     """每次调用建立独立会话，避免并发任务共享可变协议状态。"""
+    server_name = "catalog"
 
     def __init__(self, url: str, timeout_seconds: float = 15) -> None:
         self.url = url
@@ -70,6 +71,7 @@ class CatalogMcpClient:
                     name=local_tool.name,
                     description=local_tool.description,
                     args_schema=local_tool.args_schema,
+                    metadata={"transport": "mcp", "server": self.server_name},
                 )
             )
         return tools
@@ -83,6 +85,7 @@ class CatalogMcpClient:
 
 class OrderMcpClient(CatalogMcpClient):
     """订单工具从RunnableConfig读取身份，每次调用单独签发凭证。"""
+    server_name = "orders"
 
     def tools(self) -> list[BaseTool]:
         from app.ai.tools.orders import get_order_tools
@@ -95,6 +98,7 @@ class OrderMcpClient(CatalogMcpClient):
                     name=local_tool.name,
                     description=local_tool.description,
                     args_schema=local_tool.args_schema,
+                    metadata={"transport": "mcp", "server": self.server_name},
                 )
             )
         return tools

@@ -4,9 +4,22 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
+from app.modules.catalog.repository import ProductRepository
+from app.modules.catalog.router import get_product_service
+from app.modules.catalog.service import ProductService
+
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def isolated_catalog():
+    app.dependency_overrides[get_product_service] = lambda: ProductService(ProductRepository())
+    yield
+    app.dependency_overrides.pop(get_product_service, None)
 
 
 def api_get(path: str, params: Mapping[str, Any] | None = None) -> Response:

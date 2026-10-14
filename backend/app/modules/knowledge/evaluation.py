@@ -4,6 +4,8 @@ import json
 import math
 import re
 import time
+import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -20,6 +22,7 @@ from app.modules.knowledge.schemas import (
     RetrievalStrategy,
 )
 from app.modules.knowledge.service import KnowledgeService
+from app.modules.knowledge.records import save_record_metadata
 
 
 class RagAnswerEngine(Protocol):
@@ -264,6 +267,12 @@ class RagEvaluator:
                     question=question,
                     expected_sources=expected_sources,
                     retrieved_sources=retrieved_sources,
+                    retrieved_chunks=response.items,
+                    retrieval_mode=response.retrieval_mode,
+                    hyde_status=response.hyde_status,
+                    hyde_latency_ms=response.hyde_latency_ms,
+                    hyde_usage=response.hyde_usage,
+                    hyde_error_type=response.hyde_error_type,
                     first_relevant_rank=first_rank,
                     retrieval_passed=retrieval_passed,
                     passed=retrieval_passed,
@@ -287,6 +296,9 @@ class RagEvaluator:
             )
 
         return RagEvaluationReport(
+            created_at=datetime.now(UTC).isoformat(),
+            dataset_name=self.cases_path.name,
+            cases_sha256=hashlib.sha256(self.cases_path.read_bytes()).hexdigest(),
             strategy=self.strategy,
             retrieval_backend=type(self.service.vector_store).__name__,
             cases=len(results),
@@ -375,11 +387,14 @@ class RagEvaluator:
         output_directory.mkdir(parents=True, exist_ok=True)
         detail_path = output_directory / "evaluation_results.jsonl"
         report_path = output_directory / "evaluation_report.md"
+        report.evaluation_id = output_directory.name
         detail_lines: list[str] = []
         for result in report.results:
             detail_lines.append(json.dumps(result.model_dump(mode="json"), ensure_ascii=False))
         detail_path.write_text("\n".join(detail_lines) + "\n", encoding="utf-8")
         report_path.write_text(self._markdown_report(report), encoding="utf-8")
+        (output_directory / "evaluation_report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        save_record_metadata(output_directory, self.cases_path)
         return detail_path, report_path
 
     def _load_cases(self) -> list[dict[str, Any]]:

@@ -12,12 +12,13 @@ from app.db.session import get_session_factory
 from app.modules.catalog.repository import SqlProductRepository
 from app.modules.catalog.schemas import (
     Product,
-    ProductCategory,
+    CategoryName,
     ProductId,
     ProductSearchParams,
     ProductSort,
 )
 from app.modules.catalog.service import ProductNotFoundError, ProductService
+from app.modules.catalog.links import product_url
 
 
 class SearchProductsInput(BaseModel):
@@ -31,9 +32,9 @@ class SearchProductsInput(BaseModel):
         max_length=100,
         description="商品名称、系列、规格或用途关键词",
     )
-    category: ProductCategory | None = Field(
+    category: CategoryName | None = Field(
         default=None,
-        description="商品分类，只能是耳机、充电器或扩展坞",
+        description="商品分类名称，例如耳机、充电器、扩展坞或管理员新增的分类",
     )
     min_price: int | None = Field(
         default=None,
@@ -86,6 +87,7 @@ class SearchProductsResult(BaseModel):
     total: int = Field(ge=0)
     returned: int = Field(ge=0)
     has_more: bool
+    product_links: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ToolError(BaseModel):
@@ -101,6 +103,7 @@ class GetProductResult(BaseModel):
     success: bool
     product: Product | None = None
     error: ToolError | None = None
+    product_links: list[dict[str, str]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_result_state(self) -> Self:
@@ -125,7 +128,7 @@ def get_product_service() -> ProductService:
 @tool("search_products", args_schema=SearchProductsInput)
 def search_products(
     keyword: str | None = None,
-    category: ProductCategory | None = None,
+    category: CategoryName | None = None,
     min_price: int | None = None,
     max_price: int | None = None,
     in_stock: bool = False,
@@ -152,6 +155,10 @@ def search_products(
         total=result.total,
         returned=len(result.items),
         has_more=result.total > len(result.items),
+        product_links=[
+            {"id": product.id, "name": product.name, "url": product_url(product.id)}
+            for product in result.items
+        ],
     )
     return response.model_dump(mode="json")
 
@@ -169,7 +176,13 @@ def get_product(product_id: str) -> dict[str, Any]:
             error=ToolError(code="PRODUCT_NOT_FOUND", message=str(exc)),
         ).model_dump(mode="json")
 
-    return GetProductResult(success=True, product=product).model_dump(mode="json")
+    return GetProductResult(
+        success=True,
+        product=product,
+        product_links=[
+            {"id": product.id, "name": product.name, "url": product_url(product.id)}
+        ],
+    ).model_dump(mode="json")
 
 
 CATALOG_TOOLS: tuple[BaseTool, ...] = (search_products, get_product)

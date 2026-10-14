@@ -1,10 +1,11 @@
 export type BuyerId = 'A' | 'B';
 export type View = 'chat' | 'workbench' | 'lab' | 'shop' | 'admin';
-export type Category = '耳机' | '充电器' | '扩展坞';
+export type Category = string;
 export interface Product {
   id: string;
   name: string;
   category: Category;
+  image_url?: string;
   series: string;
   price: number;
   stock: number;
@@ -31,12 +32,17 @@ export interface Draft {
   resumeRequired?: boolean;
   assistantMessageId?: string;
 }
+export interface ProductLink {
+  id: string;
+  name: string;
+}
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'staff' | 'system';
   text: string;
   time: string;
   products?: string[];
+  productLinks?: ProductLink[];
   orders?: string[];
   sources?: string[];
   draftId?: string;
@@ -103,6 +109,16 @@ export interface Run {
   startedAt: string;
   duration?: number;
   events: RunEvent[];
+  telemetry?: RunTelemetry | null;
+}
+export interface RunTelemetry {
+  model_name: string | null;
+  model_names: string[];
+  token_usage: { input_tokens: number; output_tokens: number; total_tokens: number } | null;
+  usage_calls: number;
+  model_calls: number;
+  mcp_enabled: string[];
+  mcp_calls: Array<{ server: string; tool: string; calls: number; successes: number }>;
 }
 export interface DemoState {
   version: 1;

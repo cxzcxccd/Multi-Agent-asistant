@@ -12,11 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.db.initialize import initialize_database
 from app.db.session import get_session_factory
 from app.modules.after_sales.repository import SqlAfterSaleRepository
-from app.modules.after_sales.schemas import AfterSaleStatus, AfterSaleType, ReasonText
-from app.modules.after_sales.service import AfterSaleNotFoundError, AfterSaleService
+from app.modules.after_sales.schemas import AfterSaleStatus, AfterSaleType
+from app.modules.after_sales.service import (
+    AFTER_SALE_ELIGIBLE_STATUSES, AfterSaleNotFoundError, AfterSaleService,
+)
 from app.modules.conversations.schemas import BuyerId
 from app.modules.orders.repository import SqlOrderRepository
-from app.modules.orders.schemas import OrderId, OrderStatus
+from app.modules.orders.schemas import OrderId
 from app.modules.orders.service import OrderNotAccessibleError, OrderService
 
 
@@ -41,7 +43,10 @@ class PrepareAfterSaleDraftInput(BaseModel):
 
     order_id: OrderId = Field(description="五位订单编号，例如 10002")
     request_type: AfterSaleType = Field(description="申请类型，只能是退货或换货")
-    reason: ReasonText = Field(description="用户明确描述的商品问题或申请原因")
+    reason: str = Field(
+        default="", max_length=500,
+        description="用户明确描述的申请原因；未提供时留空，先展示草稿让用户填写，禁止编造原因",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -114,10 +119,10 @@ def get_after_sale(request_id: UUID, config: RunnableConfig) -> dict[str, Any]:
 def prepare_after_sale_draft(
     order_id: str,
     request_type: AfterSaleType,
-    reason: str,
     config: RunnableConfig,
+    reason: str = "",
 ) -> dict[str, Any]:
-    """校验订单并返回需要买家确认的草稿；本工具不会写入数据库。"""
+    """先校验订单并展示售后草稿，原因可留空供买家补充；本工具不会写入数据库。"""
 
     buyer_id = _buyer_from_config(config)
     if buyer_id is None:
@@ -135,7 +140,7 @@ def prepare_after_sale_draft(
             },
         }
 
-    if order.status not in {OrderStatus.DELIVERED, OrderStatus.COMPLETED}:
+    if order.status not in AFTER_SALE_ELIGIBLE_STATUSES:
         return {
             "success": False,
             "error": {

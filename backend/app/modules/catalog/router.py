@@ -25,7 +25,10 @@ from app.modules.catalog.service import (
     ProductService,
 )
 
+from app.modules.catalog.images import router as image_router
+
 router = APIRouter(prefix="/products", tags=["products"])
+router.include_router(image_router)
 
 
 @lru_cache(maxsize=1)
@@ -48,6 +51,14 @@ async def list_products(
     """根据关键词、分类、价格、库存、排序和分页条件查询商品。"""
 
     return service.search_products(filters)
+
+
+@router.get("/categories", response_model=list[str], summary="查询商品分类")
+async def list_categories(service: ProductServiceDependency) -> list[str]:
+    """返回默认分类与当前商品使用的分类。"""
+    categories = ["耳机", "充电器", "扩展坞"]
+    categories.extend(product.category for product in service.repository.list_products())
+    return list(dict.fromkeys(categories))
 
 
 @router.get(

@@ -314,10 +314,10 @@ def test_runtime_returns_safe_tool_error_to_model() -> None:
             AIMessage(
                 content="",
                 tool_calls=[
-                    make_tool_call(args={"category": "不存在的分类"}),
+                    make_tool_call(args={"category": "耳机", "limit": 0}),
                 ],
             ),
-            AIMessage(content="这个分类暂不支持，请换一个条件。"),
+            AIMessage(content="返回数量不合法，请换一个条件。"),
         ]
     )
     runtime = CustomerServiceRuntime(model_client)
@@ -329,8 +329,21 @@ def test_runtime_returns_safe_tool_error_to_model() -> None:
     )
     assert tool_message.status == "error"
     assert "TOOL_EXECUTION_ERROR" in str(tool_message.content)
-    assert "不存在的分类" not in str(tool_message.content)
-    assert result.reply.content == "这个分类暂不支持，请换一个条件。"
+    assert "ValidationError" not in str(tool_message.content)
+    assert "limit" not in str(tool_message.content)
+    assert result.reply.content == "返回数量不合法，请换一个条件。"
+
+
+def test_unknown_dynamic_category_is_a_successful_empty_search() -> None:
+    client = FakeModelClient([
+        AIMessage(content="", tool_calls=[make_tool_call(args={"category": "不存在的分类"})]),
+        AIMessage(content="没有找到该分类的商品。"),
+    ])
+    result = CustomerServiceRuntime(client).invoke([HumanMessage(content="推荐一款耳机")])
+    message = next(message for message in result.messages if isinstance(message, ToolMessage))
+    assert message.status == "success"
+    payload = json.loads(str(message.content))
+    assert payload["success"] is True and payload["items"] == [] and payload["total"] == 0
 
 
 def test_runtime_stops_repeated_tool_requests_at_configured_limit() -> None:

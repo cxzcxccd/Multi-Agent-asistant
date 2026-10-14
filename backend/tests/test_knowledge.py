@@ -65,6 +65,7 @@ def create_service(database_path: Path) -> KnowledgeService:
         provider,
         vector_store,
         minimum_score=0.32,
+        default_strategy="hybrid",
     )
 
 
@@ -97,6 +98,15 @@ def test_loader_and_search_return_traceable_policy_sources(tmp_path: Path) -> No
     assert result.items[0].category == "return_policy"
     assert result.items[0].source.startswith("return_policy.md#")
     assert result.items[0].score > 0
+    chunks = {f"{chunk.document_key}:{chunk.position}": chunk for chunk in service.repository.list_chunks()}
+    for rank, item in enumerate(result.items, start=1):
+        chunk = chunks[item.chunk_id]
+        assert item.rank == rank
+        assert item.document_key == chunk.document_key
+        assert item.chunk_position == chunk.position
+        assert item.document_version == chunk.document_version
+        assert item.content_hash == chunk.content_hash
+        assert item.content == chunk.content
     # 哈希测试向量没有通过向量阈值时，只由 BM25 贡献 RRF 排名。
     assert result.retrieval_mode == "keyword_fallback"
     assert result.items[0].score_type == "rrf"
@@ -128,6 +138,11 @@ def test_langgraph_knowledge_tool_returns_context_and_sources(
     assert result["success"] is True
     assert result["answer_context"]
     assert result["sources"][0]["document"] == "支付与退款规则"
+    assert result["query"] == "退款审核通过后多久到账"
+    assert result["retrieval_mode"] in {"hybrid", "keyword_fallback"}
+    assert result["sources"][0]["chunk_id"]
+    assert result["sources"][0]["rank"] == 1
+    assert result["sources"][0]["document_version"]
 
 
 def test_incremental_index_only_embeds_changed_chunks(tmp_path: Path) -> None:

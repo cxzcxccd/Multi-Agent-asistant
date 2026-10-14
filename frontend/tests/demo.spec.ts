@@ -80,9 +80,11 @@ test('买家隔离：越权订单与不存在订单使用统一提示', async ({
 
 test('售后草稿需要补充原因，取消不会提交申请', async ({ page }) => {
   await send(page, '订单 10002 申请退货');
-  await expect(log(page).getByText(/请具体说说遇到的问题/)).toBeVisible();
-  await send(page, '有一边没声音');
   await expect(page.getByRole('heading', { name: '请核对售后申请' })).toBeVisible();
+  await expect(page.getByLabel('问题描述')).toHaveValue('');
+  await expect(page.getByRole('button', { name: '确认申请内容' })).toBeDisabled();
+  await page.getByLabel('问题描述').fill('左耳没有声音，申请退货');
+  await expect(page.getByRole('button', { name: '确认申请内容' })).toBeEnabled();
   await page.getByRole('button', { name: '取消草稿', exact: true }).click();
   await expect(log(page).getByText('申请草稿已取消，没有提交售后申请。')).toBeVisible();
   await navigate(page, '客服工作台');
@@ -110,6 +112,27 @@ test('售后确认、审批及刷新恢复形成完整流程', async ({ page }) 
   await page.reload();
   await expect(log(page).getByText('同意退货申请，请联系人工确认退回方式。').last()).toBeVisible();
 });
+
+for (const [orderId, status, handling] of [
+  ['10004', '待发货', '取消发货'],
+  ['10001', '运输中', '物流拦截'],
+]) {
+  test(`${status}订单先展示退货草稿，七天无理由经确认后转交人工`, async ({ page }) => {
+    await send(page, `订单${orderId}申请退货`);
+    const preview = page.locator('.draft-card');
+    await expect(preview).toContainText(`当前订单状态：${status}`);
+    await expect(preview).toContainText(handling);
+    await expect(page.getByLabel('问题描述')).toHaveValue('');
+    await expect(page.getByRole('button', { name: '确认申请内容' })).toBeDisabled();
+    await page.getByLabel('问题描述').fill('七天无理由');
+    await submitDraft(page);
+    await expect(page.getByRole('log').locator('.request-card')).toContainText(orderId);
+    await expect(page.getByRole('log').locator('.request-card')).toContainText('七天无理由');
+    await navigate(page, '客服工作台');
+    await page.getByRole('tab', { name: /售后审核/ }).click();
+    await expect(page.locator('.approval-item').filter({ hasText: orderId })).toBeVisible();
+  });
+}
 
 test('重复确认及再次申请不会重复建待审单，拒绝需原因', async ({ page }) => {
   await draft(page);
@@ -200,13 +223,13 @@ test('停止和刷新中断的任务不会假装成功，可以重新查询', as
   await expect(page.getByRole('button', { name: '停止输出' })).toHaveCount(0);
 });
 
-test('评测为示例值，重置需确认且恢复初始数据', async ({ page }) => {
+test('脚本模式评测提示连接后端，重置需确认且恢复初始数据', async ({ page }) => {
   await send(page, '查询订单 10001');
   await navigate(page, '开发者与评测');
   await page.getByRole('tab', { name: '评测预览' }).click();
-  await expect(page.getByText(/分数为虚构示例/)).toBeVisible();
-  await page.getByRole('button', { name: '播放评测演示' }).click();
-  await expect(page.getByText('演示播放完成。没有调用模型，也没有运行真实评测。')).toBeVisible();
+  await expect(page.getByText('请连接后端后查看真实评测记录。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '运行 RAG 评测' })).toBeDisabled();
+  await expect(page.locator('.metric-card')).toHaveCount(0);
   await page.getByRole('tab', { name: '演示控制' }).click();
   await page.getByRole('button', { name: '重置演示数据', exact: true }).click();
   await page.getByRole('button', { name: '取消', exact: true }).click();

@@ -3,13 +3,10 @@ import {
   Activity,
   ArrowRight,
   BookOpen,
-  Check,
   ChevronRight,
-  Clock3,
   Code2,
   FlaskConical,
   Layers,
-  Play,
   RotateCcw,
   Settings2,
   ShieldCheck,
@@ -19,45 +16,50 @@ import {
 import { Badge, Modal, ProductCard, RunTrace } from './components';
 import { DEMO_DATE, policies, products } from './data';
 import { backendChatEnabled, resetDemo, setFault, useDemo } from './store';
-import { runRagEvaluation } from './api';
-import type { RagEvaluationReport } from './api';
+import EvaluationPreview from './RagEvaluationPreview';
+import KnowledgeLibrary from './KnowledgeLibrary';
+import RunMetadata from './RunMetadata';
 
-export default function Lab() {
+const evaluationPreviewEnabled = import.meta.env.VITE_RAG_EVALUATION_VISIBLE === 'true';
+
+export default function Lab({ active = true }: { active?: boolean }) {
   const s = useDemo(),
     [tab, setTab] = useState('runs'),
     [selectedRun, setSelectedRun] = useState<string>();
   const run = s.runs.find((r) => r.id === selectedRun) || s.runs[0];
+  const activeTab = !evaluationPreviewEnabled && tab === 'evaluation' ? 'runs' : tab;
   return (
     <div className="lab-page">
       <div className="page-intro">
         <div>
           <span className="eyebrow">OBSERVABILITY LAB</span>
           <h1>看得见过程，才能改进结果。</h1>
-          <p>查看 LangGraph 与模拟业务的执行事件，预览未来的评测工作流。</p>
+          <p>查看 LangGraph 与模拟业务的执行事件、工具调用和资料检索结果。</p>
         </div>
         <Badge tone="amber">
           <FlaskConical size={14} />
-          Frontend Demo
+          {backendChatEnabled ? '真实后端' : '脚本演示'}
         </Badge>
       </div>
       <div className="lab-banner">
         <Code2 size={19} />
         <span>
           {backendChatEnabled
-            ? '客服对话已经连接模型和 LangGraph；评测页可以运行真实 RAG 检索评测。'
-            : '当前使用完整脚本模式；执行轨迹来自演示脚本，评测分数为虚构示例。'}
+            ? '客服对话已经连接模型和 LangGraph，可查看分流、工具调用与资料检索记录。'
+            : '当前使用脚本模式，执行轨迹来自演示脚本。'}
         </span>
       </div>
       <div className="tab-bar" role="tablist" aria-label="开发者功能">
         {[
           ['runs', '执行记录', Activity],
-          ['evaluation', '评测预览', FlaskConical],
+          ['knowledge', '知识库', BookOpen],
+          ...(evaluationPreviewEnabled ? [['evaluation', '评测预览', FlaskConical]] : []),
           ['settings', '演示控制', Settings2],
         ].map(([id, label, Icon]) => (
           <button
             key={id as string}
             role="tab"
-            aria-selected={tab === id}
+            aria-selected={activeTab === id}
             onClick={() => setTab(id as string)}
           >
             <Icon size={16} />
@@ -65,7 +67,7 @@ export default function Lab() {
           </button>
         ))}
       </div>
-      {tab === 'runs' ? (
+      {activeTab === 'runs' ? (
         <div className="run-workspace">
           <section className="run-list">
             <div className="list-heading">
@@ -117,7 +119,7 @@ export default function Lab() {
               <>
                 <div className="row-between">
                   <h2>执行详情</h2>
-                  <Badge>模拟运行</Badge>
+                  <Badge>{run.origin === 'backend' ? '后端执行' : '模拟运行'}</Badge>
                 </div>
                 <p className="run-query">{run.query}</p>
                 <div className="run-metadata">
@@ -129,14 +131,7 @@ export default function Lab() {
                     <span>模块</span>
                     <strong>{run.module}</strong>
                   </div>
-                  <div>
-                    <span>模型 / Token</span>
-                    <strong>未接入 / 不可用</strong>
-                  </div>
-                  <div>
-                    <span>MCP</span>
-                    <strong>未接入</strong>
-                  </div>
+                  <RunMetadata run={run} active={active && activeTab === 'runs'} />
                 </div>
                 <h3 className="section-title">执行时间线</h3>
                 <RunTrace run={run} expanded />
@@ -154,219 +149,17 @@ export default function Lab() {
             )}
           </section>
         </div>
-      ) : tab === 'evaluation' ? (
+      ) : activeTab === 'knowledge' ? (
+        <KnowledgeLibrary active={active} />
+      ) : evaluationPreviewEnabled && activeTab === 'evaluation' ? (
         <EvaluationPreview />
       ) : (
-        <DemoControls />
+        <DemoControls active={active} />
       )}
     </div>
   );
 }
-function EvaluationPreview() {
-  const [playing, setPlaying] = useState(false),
-    [complete, setComplete] = useState(false);
-  const [report, setReport] = useState<RagEvaluationReport>();
-  const [error, setError] = useState('');
-  const metrics = report
-    ? [
-        {
-          label: 'Recall@3',
-          a: 0,
-          b: Math.round(report.recall_at_k * 100),
-          count: `${report.cases} 条案例`,
-        },
-        { label: 'MRR', a: 0, b: Math.round(report.mrr * 100), count: '正确来源排名' },
-        {
-          label: '无答案拒答率',
-          a: 0,
-          b: Math.round(report.rejection_accuracy * 100),
-          count: '负向案例',
-        },
-        { label: '平均检索耗时', a: 0, b: Math.round(report.average_latency_ms), count: '毫秒' },
-      ]
-    : [
-        { label: '任务成功率', a: 80, b: 90, count: '54 / 60' },
-        { label: '工具选择准确率', a: 86, b: 94, count: '47 / 50' },
-        { label: '回答正确率', a: 78, b: 88, count: '44 / 50' },
-        { label: '安全用例通过率', a: 90, b: 100, count: '10 / 10' },
-      ];
-  const startEvaluation = async () => {
-    setPlaying(true);
-    setComplete(false);
-    setError('');
-    try {
-      if (backendChatEnabled) {
-        setReport(await runRagEvaluation());
-      } else {
-        await new Promise((resolve) => window.setTimeout(resolve, 1500));
-      }
-      setComplete(true);
-    } catch (evaluationError) {
-      setError(evaluationError instanceof Error ? evaluationError.message : '评测运行失败');
-    } finally {
-      setPlaying(false);
-    }
-  };
-  return (
-    <section className="evaluation">
-      <div className="row-between evaluation-title">
-        <div>
-          <h2>让版本改进，有据可查</h2>
-          <p>
-            {report ? `真实 RAG 数据集：${report.cases} 条` : '示例数据集：60 条 · 数据集 v0.1'}
-          </p>
-        </div>
-        <button
-          className="btn btn-primary"
-          disabled={playing}
-          onClick={() => void startEvaluation()}
-        >
-          <Play size={16} />
-          {playing ? '评测中…' : backendChatEnabled ? '运行 RAG 评测' : '播放评测演示'}
-        </button>
-      </div>
-      {complete && (
-        <div className="notice" role="status">
-          <Check size={16} />
-          {report
-            ? '真实检索评测完成，结果已更新。'
-            : '演示播放完成。没有调用模型，也没有运行真实评测。'}
-        </div>
-      )}
-      {error && (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      )}
-      {playing && (
-        <div className="eval-progress" role="status">
-          正在演示：载入案例 → 模拟评分 → 版本对比
-          <div />
-        </div>
-      )}
-      <div className="metric-grid">
-        {metrics.map((m, i) => (
-          <article className="metric-card" key={m.label}>
-            <div className="row-between">
-              <span>{m.label}</span>
-              <Badge>{report ? '实测' : '示例'}</Badge>
-            </div>
-            <strong>
-              {m.b}
-              <small>{report && m.label === '平均检索耗时' ? 'ms' : '%'}</small>
-            </strong>
-            <div>
-              <span className="metric-change">{report ? '当前结果' : `+${m.b - m.a} pp`}</span>
-              <span className="tiny muted">{m.count} · 示例分母</span>
-            </div>
-            <div className="metric-spark" aria-hidden="true">
-              {[27, 39, 33, 47, 42, 55, 51, 64, 62, 77, 71, 85].map((v, idx) => (
-                <i key={idx} style={{ height: `${Math.min(v + i * 2, 95)}%` }} />
-              ))}
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="evaluation-panels">
-        <article className="panel chart-panel">
-          <div className="row-between">
-            <h3>Prompt V1 与 V2</h3>
-            <div className="chart-legend">
-              <span>
-                <i />
-                V1
-              </span>
-              <span>
-                <i />
-                V2
-              </span>
-            </div>
-          </div>
-          <p className="tiny muted">固定案例下的示例对比，不代表当前模型表现</p>
-          {metrics.map((m) => (
-            <div className="comparison-row" key={m.label}>
-              <span>{m.label}</span>
-              <div className="bar-pair">
-                <div>
-                  <i style={{ width: `${m.a}%` }} />
-                  <span>{m.a}%</span>
-                </div>
-                <div>
-                  <i style={{ width: `${m.b}%` }} />
-                  <span>{m.b}%</span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </article>
-        <article className="panel cost-panel">
-          <h3>运行条件</h3>
-          {[
-            ['模型供应商', '未接入'],
-            ['真实评测', '尚未运行'],
-            ['Token 消耗', '不可用'],
-            ['调用费用', '不可用'],
-            ['MCP 调用成功率', '不适用'],
-            ['真实延迟 P50 / P95', '未测量'],
-          ].map(([label, value]) => (
-            <div className="row-between" key={label}>
-              <span>{label}</span>
-              <strong>{value}</strong>
-            </div>
-          ))}
-          <div className="subtle-note">
-            <Clock3 size={16} />
-            正式阶段才会记录实际耗时、Token 和费用。
-          </div>
-        </article>
-      </div>
-      <article className="panel cases-panel">
-        <div className="row-between">
-          <h3>评测案例预览</h3>
-          <Badge>规则检查 + 人工标注 + 后续 Judge</Badge>
-        </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>案例</th>
-                <th>用户输入</th>
-                <th>预期行为</th>
-                <th>判定方式</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report ? (
-                report.results.map((result) => (
-                  <tr key={result.id}>
-                    <td>{result.id}</td>
-                    <td>{result.question}</td>
-                    <td>{result.retrieved_sources.join('、') || '拒绝召回'}</td>
-                    <td>
-                      <Badge tone={result.passed ? 'green' : 'red'}>
-                        {result.passed ? '通过' : '失败'}
-                      </Badge>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td>RAG-01</td>
-                  <td>耳机进水可以免费保修吗？</td>
-                  <td>召回保修范围并拒绝无依据承诺</td>
-                  <td>
-                    <Badge>待运行</Badge>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </article>
-    </section>
-  );
-}
-function DemoControls() {
+function DemoControls({ active }: { active: boolean }) {
   const s = useDemo(),
     [resetting, setResetting] = useState(false);
   return (
@@ -415,24 +208,28 @@ function DemoControls() {
           </button>
         </article>
       </div>
-      <article className="panel">
-        <div className="row-between">
-          <h2>
-            <BookOpen size={19} />
-            店铺规则
-          </h2>
-          <Badge>只读 · v1.0</Badge>
-        </div>
-        <div className="policy-grid">
-          {policies.map((p) => (
-            <div key={p.id}>
-              <span className="eyebrow">{p.id}</span>
-              <h3>{p.title}</h3>
-              <p>{p.content}</p>
-            </div>
-          ))}
-        </div>
-      </article>
+      {backendChatEnabled ? (
+        <KnowledgeLibrary active={active} />
+      ) : (
+        <article className="panel">
+          <div className="row-between">
+            <h2>
+              <BookOpen size={19} />
+              店铺规则
+            </h2>
+            <Badge>只读 · v1.0</Badge>
+          </div>
+          <div className="policy-grid">
+            {policies.map((p) => (
+              <div key={p.id}>
+                <span className="eyebrow">{p.id}</span>
+                <h3>{p.title}</h3>
+                <p>{p.content}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+      )}
       <article className="panel">
         <div className="row-between">
           <h2>演示商品目录</h2>

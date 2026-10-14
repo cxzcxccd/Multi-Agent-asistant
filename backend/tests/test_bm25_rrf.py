@@ -86,7 +86,12 @@ class StubVectors:
 
 
 def create_service(hits):
-    return KnowledgeService(StubRepository(), StubEmbedding(), StubVectors(hits))
+    return KnowledgeService(
+        StubRepository(),
+        StubEmbedding(),
+        StubVectors(hits),
+        default_strategy="hybrid",
+    )
 
 
 def test_service_uses_rank_fusion_and_filters_stale_or_low_score_vectors() -> None:

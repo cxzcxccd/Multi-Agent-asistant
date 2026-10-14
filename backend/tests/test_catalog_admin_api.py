@@ -349,3 +349,24 @@ def test_product_list_remains_public(
 
     assert response.status_code == 200
     assert response.json()["total"] == 2
+
+
+def test_custom_category_is_saved_listed_and_searchable(product_service: ProductService) -> None:
+    payload = {**NEW_PRODUCT, "category": "  键盘  "}
+    created = api_request("POST", "/api/products", headers=ADMIN_HEADERS, json=payload)
+    assert created.status_code == 201
+    assert created.json()["category"] == "键盘"
+    assert product_service.get_product("p03").category == "键盘"
+    assert "键盘" in api_request("GET", "/api/products/categories").json()
+    result = api_request("GET", "/api/products?category=键盘").json()
+    assert result["total"] == 1
+    assert result["items"][0]["id"] == "p03"
+    updated = api_request("PATCH", "/api/products/p03", headers=ADMIN_HEADERS, json={"category": "鼠标"})
+    assert updated.status_code == 200
+    assert product_service.get_product("p03").category == "鼠标"
+
+
+@pytest.mark.parametrize("category", ["", "   ", "长" * 51])
+def test_reject_invalid_category(product_service: ProductService, category: str) -> None:
+    response = api_request("POST", "/api/products", headers=ADMIN_HEADERS, json={**NEW_PRODUCT, "category": category})
+    assert response.status_code == 422

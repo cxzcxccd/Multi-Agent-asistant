@@ -24,8 +24,11 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
+from app.core.tracing import traced, span, emit
+
 from app.ai.model_client import ModelClient, create_model_client
 from app.ai.multi_agent.schemas import AgentPlan, AgentTaskResult
+from app.ai.telemetry import RunTelemetry
 from app.ai.multi_agent.supervisor import Supervisor, format_agent_context, tools_for_plan
 from app.ai.query_preprocessor import (
     QueryAnalysis,
@@ -63,6 +66,7 @@ class RuntimeResult:
     query_analysis: QueryAnalysis | None = None
     agent_plan: AgentPlan | None = None
     task_results: tuple[AgentTaskResult, ...] = ()
+    telemetry: RunTelemetry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +80,7 @@ class RuntimePause:
     query_analysis: QueryAnalysis | None = None
     agent_plan: AgentPlan | None = None
     task_results: tuple[AgentTaskResult, ...] = ()
+    telemetry: RunTelemetry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +219,7 @@ class CustomerServiceRuntime:
             raise RuntimeLoopLimitError("客服运行图超过了最大执行步数") from exc
         return self._build_result(state)
 
+    @traced("workflow")
     async def ainvoke(
         self,
         messages: Sequence[BaseMessage],
@@ -306,6 +312,7 @@ class CustomerServiceRuntime:
         builder.add_edge("tools", "model")
         return builder.compile()
 
+    @traced("router")
     def _preprocess_query(
         self,
         state: CustomerServiceState,
@@ -317,6 +324,7 @@ class CustomerServiceRuntime:
         analysis = self._query_preprocessor.analyze(state["messages"])
         return {"query_analysis": analysis}
 
+    @traced("supervisor")
     def _supervise(
         self,
         state: CustomerServiceState,
@@ -328,6 +336,7 @@ class CustomerServiceRuntime:
         analysis = self._require_query_analysis(state)
         return {"agent_plan": self._supervisor.plan(analysis)}
 
+    @traced("supervisor")
     async def _asupervise(
         self,
         state: CustomerServiceState,
@@ -348,6 +357,7 @@ class CustomerServiceRuntime:
             )
         return {"agent_plan": plan}
 
+    @traced("router")
     async def _apreprocess_query(
         self,
         state: CustomerServiceState,
@@ -373,6 +383,7 @@ class CustomerServiceRuntime:
             )
         return {"query_analysis": analysis}
 
+    @traced("agent")
     def _call_model(
         self,
         state: CustomerServiceState,
@@ -390,6 +401,7 @@ class CustomerServiceRuntime:
             "model_calls": state.get("model_calls", 0) + 1,
         }
 
+    @traced("agent")
     async def _acall_model(
         self,
         state: CustomerServiceState,

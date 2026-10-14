@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.ai.multi_agent.schemas import AgentPlan, AgentRunRecord, AgentTaskResult
+from app.ai.telemetry import RunTelemetry
 from app.modules.agent_runs.models import AgentRunModel, AgentTaskModel
 
 
@@ -26,6 +27,7 @@ class SqlAgentRunRepository:
             status=run.status,
             plan_json=run.plan.model_dump_json(),
             final_answer=run.final_answer,
+            telemetry_json=run.telemetry.model_dump_json() if run.telemetry else None,
             model_calls=run.model_calls,
             tool_calls=run.tool_calls,
             started_at=run.started_at,
@@ -56,7 +58,10 @@ class SqlAgentRunRepository:
             agent_name=task.agent_name.value,
             status=task.status,
             summary=task.summary,
-            result_json=json.dumps(task.tool_results, ensure_ascii=False),
+            result_json=json.dumps({
+                "tool_results": task.tool_results,
+                "model_usage": [item.model_dump() for item in task.model_usage],
+            }, ensure_ascii=False),
             model_calls=task.model_calls,
             tool_calls=task.tool_calls,
             tool_rounds=task.tool_rounds,
@@ -68,13 +73,18 @@ class SqlAgentRunRepository:
     def _to_schema(cls, record: AgentRunModel) -> AgentRunRecord:
         results: list[AgentTaskResult] = []
         for task in record.tasks:
+            snapshot = json.loads(task.result_json)
+            # 历史记录只保存了工具结果列表。
+            tool_results = snapshot if isinstance(snapshot, list) else snapshot["tool_results"]
+            model_usage = [] if isinstance(snapshot, list) else snapshot.get("model_usage", [])
             results.append(
                 AgentTaskResult(
                     task_id=task.task_id,
                     agent_name=task.agent_name,
                     status=task.status,
                     summary=task.summary,
-                    tool_results=json.loads(task.result_json),
+                    tool_results=tool_results,
+                    model_usage=model_usage,
                     model_calls=task.model_calls,
                     tool_calls=task.tool_calls,
                     tool_rounds=task.tool_rounds,
@@ -83,6 +93,7 @@ class SqlAgentRunRepository:
                 )
             )
         return AgentRunRecord(
+            telemetry=RunTelemetry.model_validate_json(record.telemetry_json) if record.telemetry_json else None,
             id=UUID(record.id),
             conversation_id=UUID(record.conversation_id),
             buyer_id=record.buyer_id,

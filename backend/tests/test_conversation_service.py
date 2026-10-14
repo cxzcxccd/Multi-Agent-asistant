@@ -4,12 +4,14 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.ai.model_client import ModelInvocationError
+from app.ai.multi_agent.schemas import AgentTaskResult
 from app.ai.runtime import RuntimePause, RuntimeResult, RuntimeStreamEvent
 from app.modules.conversations.repository import ConversationRepository
 from app.modules.conversations.schemas import (
@@ -233,6 +235,31 @@ def test_service_creates_conversation_and_saves_two_messages() -> None:
         "thread_id": str(conversation_id),
         "buyer_id": "A",
     }
+
+
+def test_recommended_product_links_are_saved_with_the_reply() -> None:
+    class ProductRuntime(FakeRuntime):
+        async def ainvoke(self, messages, config=None) -> RuntimeResult:
+            result = await super().ainvoke(messages, config)
+            return replace(result, task_results=(AgentTaskResult(
+                task_id="product", agent_name="product_agent", status="completed",
+                summary="查询了新增商品",
+                tool_results=[{"name": "get_product", "output": {
+                    "success": True,
+                    "product": {"id": "p13", "name": "ROG SWIFT OLED PG259QWS Ace"},
+                }}],
+            ),))
+
+    repository = ConversationRepository()
+    service = ConversationService(
+        repository=repository,
+        runtime=ProductRuntime(["推荐 ROG SWIFT OLED PG259QWS Ace。"]),
+    )
+    response = asyncio.run(service.send_message(ChatRequest(buyer_id="A", message="推荐显示器")))
+    assert "#shop?product=p13" in response.assistant_message.content
+    saved = repository.get(response.conversation_id)
+    assert saved is not None
+    assert saved.messages[-1].content == response.assistant_message.content
 
 
 def test_service_continues_conversation_with_relevant_history() -> None:

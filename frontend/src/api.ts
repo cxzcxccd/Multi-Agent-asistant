@@ -329,6 +329,7 @@ export interface ChatResponse {
     query_analysis: QueryAnalysis | null;
     agent_plan: AgentPlan | null;
     task_results: AgentTaskResult[];
+    telemetry?: import('./types').RunTelemetry | null;
   };
 }
 
@@ -477,19 +478,194 @@ export class CatalogApiError extends Error {
 }
 
 export interface RagEvaluationReport {
+  evaluation_id?: string;
+  created_at?: string;
+  dataset_name?: string;
+  cases_sha256?: string;
+  strategy: string;
+  retrieval_backend: string;
   cases: number;
+  answerable_cases: number;
+  unanswerable_cases: number;
   recall_at_k: number;
+  recall_at_1: number;
+  recall_at_3: number;
+  recall_at_5: number;
   mrr: number;
   rejection_accuracy: number;
+  false_retrieval_rate: number;
   average_latency_ms: number;
+  retrieval_latency_p50_ms: number;
+  retrieval_latency_p95_ms: number;
   results: Array<{
     id: string;
     question: string;
     expected_sources: string[];
     retrieved_sources: string[];
     first_relevant_rank: number | null;
+    should_answer?: boolean;
+    reference_answer?: string | null;
+    retrieval_latency_ms?: number;
+    retrieved_chunks?: Array<Record<string, unknown>>;
+    retrieval_mode?: string;
     passed: boolean;
   }>;
+}
+
+export interface KnowledgeLibraryChunk {
+  id: number | null;
+  document_key: string;
+  title: string;
+  category: string;
+  section: string;
+  content: string;
+  source: string;
+  position: number;
+  document_version: string;
+  content_hash: string;
+  updated_at: string | null;
+}
+
+export interface KnowledgeLibraryDocument {
+  document_key: string;
+  title: string;
+  category: string;
+  document_versions: string[];
+  updated_at: string | null;
+  chunks: KnowledgeLibraryChunk[];
+}
+
+export interface KnowledgeLibraryResponse {
+  documents: KnowledgeLibraryDocument[];
+  total_documents: number;
+  total_chunks: number;
+  revision: string;
+}
+
+export async function getKnowledgeLibrary(
+  etag?: string,
+  signal?: AbortSignal,
+): Promise<{
+  library: KnowledgeLibraryResponse | null;
+  etag: string | null;
+}> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/staff/knowledge/documents`,
+    {
+      signal,
+      headers: etag ? { 'If-None-Match': etag } : undefined,
+    },
+    { role: 'staff' },
+  );
+  if (response.status === 304)
+    return { library: null, etag: response.headers.get('ETag') || etag || null };
+  if (!response.ok) {
+    throw new ChatApiError(`知识库加载失败（${response.status}），请刷新重试。`, response.status);
+  }
+  return {
+    library: (await response.json()) as KnowledgeLibraryResponse,
+    etag: response.headers.get('ETag'),
+  };
+}
+
+export interface RagRuntimeResult {
+  expected_tool?: string | null;
+  id: string;
+  query: string;
+  answer: string | null;
+  reference_answer?: string | null;
+  expected_sources?: string[];
+  sources: string[];
+  retrieved_chunks?: Array<Record<string, unknown>>;
+  tool_selection_correct: boolean | null;
+  parameters_correct: boolean | null;
+  task_passed: boolean;
+  end_to_end_latency_ms: number;
+  quality: {
+    correctness: number;
+    faithfulness: number;
+    completeness: number;
+    citation_correctness: number;
+    reason: string;
+  } | null;
+  calls: Array<{ name: string; args: Record<string, unknown>; parameters_correct: boolean }>;
+  error: string | null;
+  evaluation_error: string | null;
+}
+
+export interface RagRuntimeReport {
+  reused_cases?: number;
+  answerable_cases?: number;
+  unanswerable_cases?: number;
+  cases: number;
+  model: string;
+  workers: number;
+  created_at: string;
+  retrieval_backend: string;
+  runtime_error_cases: number;
+  evaluation_failure_cases: number;
+  quality_cases: number;
+  tool_selection_correct: number;
+  tool_selection_cases: number;
+  tool_selection_accuracy: number | null;
+  parameter_valid_cases: number;
+  parameter_cases: number;
+  parameter_accuracy: number | null;
+  task_successes: number;
+  task_completion_rate: number;
+  end_to_end_p95_ms: number | null;
+  usage_cases: number;
+  generation_usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  quality_averages: {
+    correctness: number | null;
+    faithfulness: number | null;
+    completeness: number | null;
+    citation_correctness: number | null;
+  };
+  average_request_cost: number | null;
+  cost_currency: string | null;
+}
+
+export interface RagEvaluationSummary {
+  id: string;
+  created_at: string;
+  dataset_name: string;
+  cases: number;
+  cases_sha256: string;
+  annotation_status: string;
+  has_retrieval: boolean;
+  has_runtime: boolean;
+}
+
+export interface RagEvaluationRecord extends RagEvaluationSummary {
+  retrieval: RagEvaluationReport | null;
+  runtime: RagRuntimeReport | null;
+  runtime_results: RagRuntimeResult[];
+}
+
+export async function getRagEvaluationRecords(
+  signal?: AbortSignal,
+): Promise<RagEvaluationSummary[]> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/staff/knowledge/evaluations`,
+    { signal },
+    { role: 'staff' },
+  );
+  if (!response.ok) throw new ChatApiError('评测记录加载失败', response.status);
+  return ((await response.json()) as { records: RagEvaluationSummary[] }).records;
+}
+
+export async function getRagEvaluationRecord(
+  id: string,
+  signal?: AbortSignal,
+): Promise<RagEvaluationRecord> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/staff/knowledge/evaluations/${encodeURIComponent(id)}`,
+    { signal },
+    { role: 'staff' },
+  );
+  if (!response.ok) throw new ChatApiError('评测详情加载失败', response.status);
+  return (await response.json()) as RagEvaluationRecord;
 }
 
 export async function runRagEvaluation(): Promise<RagEvaluationReport> {
@@ -649,8 +825,41 @@ export async function reviewAfterSale(data: {
 }
 
 async function readCatalogError(response: Response): Promise<CatalogApiError> {
-  const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-  const message = body?.detail || `商品接口请求失败（${response.status}）`;
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  const detail = body?.detail;
+  const labels: Record<string, string> = {
+    name: '商品名称',
+    category: '分类',
+    series: '系列',
+    price: '价格',
+    stock: '库存',
+    specs: '规格',
+    description: '商品描述',
+    color: '颜色标识',
+    source: '来源',
+  };
+  let message = `商品接口请求失败（${response.status}）`;
+  if (typeof detail === 'string' && detail.trim()) {
+    message = detail;
+  } else if (Array.isArray(detail)) {
+    const errors = detail.flatMap((item: unknown) => {
+      if (!item || typeof item !== 'object') return [];
+      const error = item as { loc?: unknown; msg?: unknown };
+      if (typeof error.msg !== 'string') return [];
+      const field = Array.isArray(error.loc)
+        ? error.loc
+            .filter((part) => part !== 'body' && part !== 'query')
+            .map(String)
+            .join('.')
+        : '';
+      return [`${labels[field] || field || '商品信息'}：${error.msg}`];
+    });
+    if (errors.length) message = errors.join('；');
+  } else if (detail && typeof detail === 'object') {
+    const error = detail as { message?: unknown; msg?: unknown };
+    const text = error.message ?? error.msg;
+    if (typeof text === 'string' && text.trim()) message = text;
+  }
   return new CatalogApiError(message, response.status);
 }
 
@@ -737,6 +946,7 @@ export async function getProductDetail(productId: string, signal?: AbortSignal):
 }
 
 export interface ProductCreatePayload {
+  image_url?: string;
   name: string;
   category: Category;
   series: string;
@@ -985,4 +1195,43 @@ export async function resumeAgentWorkflow(
     throw new ChatApiError(body?.detail || `恢复工作流失败（${response.status}）`, response.status);
   }
   return (await response.json()) as ChatResponse;
+}
+
+export async function getProductCategories(signal?: AbortSignal): Promise<Category[]> {
+  const response = await fetch(`${apiBaseUrl}/products/categories`, { signal });
+  if (!response.ok) throw await readCatalogError(response);
+  return (await response.json()) as Category[];
+}
+
+export async function getRuntimeStatus(signal?: AbortSignal): Promise<{
+  model_name: string | null;
+  model_configured: boolean;
+  mcp_enabled: string[];
+}> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/staff/runtime/status`,
+    { signal },
+    { role: 'staff' },
+  );
+  if (!response.ok) throw new Error('运行配置读取失败');
+  return response.json();
+}
+
+export function productImageUrl(path: string): string {
+  return new URL(path, new URL(apiBaseUrl, window.location.href)).href;
+}
+
+export async function uploadProductImage(file: File): Promise<string> {
+  const response = await authenticatedFetch(
+    `${apiBaseUrl}/products/images`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    },
+    { role: 'admin' },
+  );
+  if (!response.ok) throw await readCatalogError(response);
+  const data = (await response.json()) as { image_url: string };
+  return data.image_url;
 }

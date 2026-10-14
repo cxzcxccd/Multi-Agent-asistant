@@ -14,6 +14,9 @@ import {
   Usb,
   X,
 } from 'lucide-react';
+import { KnowledgeRetrievalTrace } from './KnowledgeRetrievalTrace';
+import { productImageUrl } from './api';
+import { productHref } from './productLinks';
 import { findOrder, findProduct, money, policies, products } from './data';
 import { cancelDraft, editDraft, submitDraft, useDemo } from './store';
 import type { AfterSale, BuyerId, Conversation, Product, Run } from './types';
@@ -29,6 +32,15 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 export function ProductIcon({ product, size = 32 }: { product: Product; size?: number }) {
+  if (product.image_url)
+    return (
+      <img
+        className="product-icon-image"
+        src={productImageUrl(product.image_url)}
+        alt={product.name}
+        style={{ width: size, height: size, objectFit: 'contain' }}
+      />
+    );
   const Icon =
     product.category === '耳机' ? Headphones : product.category === '充电器' ? PlugZap : Usb;
   return (
@@ -68,6 +80,9 @@ export function ProductCard({
             了解商品 <ArrowUpRight size={15} />
           </button>
         )}
+        <a className="product-link" href={productHref(id)} aria-label={`查看 ${p.name} 商品详情`}>
+          查看商品详情 <ArrowUpRight size={15} />
+        </a>
       </div>
     </article>
   );
@@ -194,50 +209,99 @@ export function DraftCard({ conversation }: { conversation: Conversation }) {
   const [confirming, setConfirming] = useState(false);
   const [checked, setChecked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const order = findOrder(d.orderId, conversation.buyer)!;
+  const reasonReady = d.reason.trim().length >= 5;
+  const busy = submitting || cancelling;
   return (
-    <section className="draft-card">
+    <section className="draft-card" aria-busy={busy}>
       <div className="draft-heading">
         <span className="icon-tile blue">
           <FileText size={20} />
         </span>
         <div>
           <h3>请核对售后申请</h3>
-          <p>草稿尚未提交，确认后进入人工审核</p>
+          <p>先查看草稿，补充原因，再确认转交人工</p>
         </div>
-        <Badge tone="amber">待你确认</Badge>
+        <Badge tone={reasonReady ? 'blue' : 'amber'}>
+          {reasonReady ? '待你确认' : '待补充原因'}
+        </Badge>
       </div>
-      <div className="draft-product">
-        <span>订单 {d.orderId}</span>
-        <strong>{findProduct(order.productId).name}</strong>
+      <ol className="draft-steps" aria-label="售后申请步骤">
+        <li className="is-complete">1 查看草稿</li>
+        <li className={reasonReady ? 'is-complete' : 'is-current'}>2 补充原因</li>
+        <li className={reasonReady ? 'is-current' : ''}>3 确认转交人工</li>
+      </ol>
+      <div className="draft-module draft-module-info">
+        <h4>已确认的申请信息</h4>
+        <div className="draft-product">
+          <span>订单 {d.orderId}</span>
+          <strong>{findProduct(order.productId).name}</strong>
+          <span>当前订单状态：{order.status}</span>
+        </div>
+        <label className="field">
+          申请类型
+          <select
+            disabled={busy}
+            value={d.kind}
+            onChange={(e) => editDraft(conversation.id, { kind: e.target.value, reason: d.reason })}
+          >
+            <option>退货申请</option>
+            <option>换货申请</option>
+          </select>
+        </label>
       </div>
-      <label className="field">
-        申请类型
-        <select
-          value={d.kind}
-          onChange={(e) => editDraft(conversation.id, { kind: e.target.value, reason: d.reason })}
-        >
-          <option>退货申请</option>
-          <option>换货申请</option>
-        </select>
-      </label>
-      <label className="field">
-        问题描述
-        <textarea
-          value={d.reason}
-          maxLength={500}
-          rows={3}
-          onChange={(e) => editDraft(conversation.id, { kind: d.kind, reason: e.target.value })}
-        />
-      </label>
+      <div className="draft-module draft-module-reason">
+        <h4>补充申请原因</h4>
+        <label className="field">
+          {d.kind.includes('换货') ? '换货原因 / 问题描述' : '退货原因 / 问题描述'}
+          <textarea
+            disabled={busy}
+            aria-label="问题描述"
+            aria-describedby={`draft-reason-${d.id}`}
+            required
+            minLength={5}
+            placeholder="请说明退货原因或具体问题，例如：左耳无声音，已更换设备重试。"
+            value={d.reason}
+            maxLength={500}
+            rows={3}
+            onChange={(e) => editDraft(conversation.id, { kind: d.kind, reason: e.target.value })}
+          />
+        </label>
+        <p className="draft-hint" id={`draft-reason-${d.id}`}>
+          {reasonReady
+            ? '原因已填写，可继续核对并确认。'
+            : '请填写至少 5 个字的具体原因，补充后才能确认。'}
+        </p>
+      </div>
+      <div className="draft-module draft-module-next">
+        <h4>确认后转交人工</h4>
+        <p>你确认提交后，客服才能收到申请并审核退货事项。当前草稿尚未提交。</p>
+        {order.status === '待发货' ? (
+          <p>订单尚未发货，人工客服将核实取消发货等处理方式。</p>
+        ) : order.status === '运输中' ? (
+          <p>商品尚在运输途中，人工客服将核实物流拦截或退回等处理方式。</p>
+        ) : null}
+      </div>
       <div className="draft-actions">
-        <button className="btn" onClick={() => cancelDraft(conversation.id)}>
-          取消草稿
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={async () => {
+            setCancelling(true);
+            try {
+              await cancelDraft(conversation.id);
+            } finally {
+              setCancelling(false);
+            }
+          }}
+        >
+          {cancelling ? '正在取消…' : '取消草稿'}
         </button>
         <button
           className="btn btn-primary"
-          disabled={!d.reason.trim()}
+          disabled={!reasonReady || busy}
           onClick={() => {
             setChecked(false);
             setConfirming(true);
@@ -248,7 +312,9 @@ export function DraftCard({ conversation }: { conversation: Conversation }) {
       </div>
       {confirming && (
         <Modal title="确认提交售后申请" onClose={() => setConfirming(false)}>
-          <p className="muted">提交后由客服审核，当前不会执行退款。</p>
+          <p className="draft-confirm-notice">
+            请核对下面的完整草稿。点击“提交申请”即确认转交人工客服审核。
+          </p>
           <dl className="confirmation-detail">
             <dt>订单</dt>
             <dd>{d.orderId}</dd>
@@ -278,12 +344,13 @@ export function DraftCard({ conversation }: { conversation: Conversation }) {
             </button>
             <button
               className="btn btn-primary"
-              disabled={!checked || submitting}
+              disabled={!checked || !reasonReady || submitting}
               onClick={async () => {
                 setSubmitting(true);
                 setSubmitError('');
                 try {
                   await submitDraft(conversation.id, d.id, d.revision);
+                  setConfirming(false);
                 } catch (error) {
                   const message = error instanceof Error ? error.message : '提交失败，请稍后重试。';
                   setSubmitError(message);
@@ -430,7 +497,17 @@ export function RunTrace({ run, expanded = false }: { run: Run; expanded?: boole
                 {e.toolResults?.map((toolResult, index) => (
                   <div className="trace-tool-result" key={`${toolResult.name}-${index}`}>
                     <span>工具返回 · {toolResult.name}</span>
-                    <pre>{formatToolOutput(toolResult.output)}</pre>
+                    {toolResult.name === 'search_knowledge' ? (
+                      <>
+                        <KnowledgeRetrievalTrace output={toolResult.output} />
+                        <details>
+                          <summary>查看原始工具返回</summary>
+                          <pre>{formatToolOutput(toolResult.output)}</pre>
+                        </details>
+                      </>
+                    ) : (
+                      <pre>{formatToolOutput(toolResult.output)}</pre>
+                    )}
                   </div>
                 ))}
               </div>

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+import pytest
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
@@ -63,6 +64,10 @@ class FakeOrderRepository:
                 ordered_at=date(2026, 9, 10),
                 items=[item],
                 total_amount=Decimal("499.00"),
+            ),
+            "10004": Order(
+                id="10004", buyer_id="A", status=OrderStatus.PENDING_SHIPMENT,
+                ordered_at=date(2026, 9, 15), items=[item], total_amount=Decimal("499.00"),
             ),
         }
 
@@ -206,7 +211,7 @@ def test_same_idempotency_key_rejects_different_content(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_duplicate_active_request_and_ineligible_order_are_rejected(
+def test_duplicate_active_request_is_rejected(
     tmp_path: Path,
 ) -> None:
     async def run() -> None:
@@ -221,19 +226,33 @@ def test_duplicate_active_request_and_ineligible_order_are_rejected(
                     "reason": "同一订单再次创建申请",
                 },
             )
-            ineligible = await client.post(
-                "/api/after-sales/drafts",
-                json={
-                    "buyer_id": "A",
-                    "order_id": "10001",
-                    "request_type": "退货",
-                    "reason": "运输中的订单申请退货",
-                },
-            )
-
             assert duplicate.status_code == 409
-            assert ineligible.status_code == 409
-            assert ineligible.json()["detail"] == "订单当前状态暂不支持创建售后申请"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("order_id", ["10004", "10001", "10002"])
+def test_buyer_can_submit_return_before_or_after_delivery(tmp_path: Path, order_id: str) -> None:
+    async def run() -> None:
+        async with after_sales_client(tmp_path / "stages.db") as client:
+            response = await client.post("/api/after-sales/drafts", json={
+                "buyer_id": "A", "order_id": order_id,
+                "request_type": "退货", "reason": "七天无理由",
+            })
+            assert response.status_code == 201
+            draft = response.json()
+            before = await client.get("/api/staff/after-sales/pending", headers=STAFF_HEADERS)
+            assert before.json() == []
+            submitted = await client.post(
+                f"/api/after-sales/drafts/{draft['id']}/submit",
+                json={"buyer_id": "A", "expected_version": 1},
+                headers={"Idempotency-Key": f"return-{order_id}"},
+            )
+            assert submitted.status_code == 200
+            assert submitted.json()["status"] == "pending"
+            assert submitted.json()["reason"] == "七天无理由"
+            pending = await client.get("/api/staff/after-sales/pending", headers=STAFF_HEADERS)
+            assert [item["id"] for item in pending.json()] == [draft["id"]]
 
     asyncio.run(run())
 

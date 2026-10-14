@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from ipaddress import ip_address
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Protocol
@@ -279,12 +281,20 @@ class MilvusKnowledgeVectorStore:
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
+        hostname = urlparse(self._uri).hostname or ''
+        local = hostname.lower() == 'localhost'
+        try:
+            local = local or ip_address(hostname).is_loopback
+        except ValueError:
+            pass
+        options = {"grpc_options": {"grpc.enable_http_proxy": 0}} if local else {}
         try:
             self._client = MilvusClient(
                 uri=self._uri,
                 token=self._token,
                 db_name=self._database,
                 timeout=self._timeout,
+                **options,
             )
         except Exception as error:
             self._raise_unavailable(error)

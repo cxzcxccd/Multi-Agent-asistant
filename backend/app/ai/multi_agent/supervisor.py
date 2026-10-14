@@ -1,6 +1,13 @@
 """根据 Query 分析结果为客服请求选择最小领域 Agent 集合。"""
 
 from typing import Literal
+from collections.abc import Sequence
+from typing import Any
+
+from langchain_core.messages import BaseMessage
+from langchain_core.runnables import RunnableConfig
+from app.ai.multi_agent.intent_agent import IntentRecognitionAgent
+from app.ai.multi_agent.routing_policy import RoutingPolicy
 
 from langchain_core.tools import BaseTool
 
@@ -63,6 +70,27 @@ def tools_for_plan(plan: AgentPlan) -> list[BaseTool]:
 
 class Supervisor:
     """使用语义路由结果生成可解释且可测试的 Agent 调度计划。"""
+
+    def __init__(self, intent_agent: IntentRecognitionAgent | None = None,
+                 routing_policy: RoutingPolicy | None = None) -> None:
+        self.intent_agent = intent_agent
+        self.routing_policy = routing_policy or RoutingPolicy()
+
+    async def recognize_intents(
+        self, analysis: QueryAnalysis, messages: Sequence[BaseMessage],
+        config: RunnableConfig | None = None,
+    ) -> tuple[QueryAnalysis, Any | None]:
+        if self.intent_agent is None:
+            return analysis, None
+        if self.routing_policy.fast_path(analysis, has_context=len(messages) > 1):
+            return analysis.model_copy(update={
+                "routing_decision": "embedding_fast_path",
+                "routing_reason": "明确单意图且向量分数、分差满足快速路由阈值。",
+                "embedding_intents": [analysis.primary_intent],
+                "router_source": "embedding_fast_path",
+            }), None
+        revised, response = await self.intent_agent.analyze(analysis, messages, config)
+        return self.routing_policy.arbitrate(analysis, revised), response
 
     def plan(self, analysis: QueryAnalysis) -> AgentPlan:
         """选择主 Agent，并为复合 Query 加入必要的协作 Agent。"""

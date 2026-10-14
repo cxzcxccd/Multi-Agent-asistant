@@ -1,0 +1,10 @@
+{
+  "tests": 375,
+  "compression_tests": 22,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "source": "pytest.xml",
+  "command": "KNOWLEDGE_RETRIEVAL_STRATEGY=hybrid python -m pytest -q --junitxml=../docs/evaluations/context-compression-2026-10-14/pytest.xml",
+  "scope": "local deterministic tests; no online model quality evaluation"
+}

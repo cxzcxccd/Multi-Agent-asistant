@@ -15,6 +15,7 @@ from pydantic import (
 
 from app.ai.query_preprocessor import QueryAnalysis
 from app.ai.multi_agent.schemas import AgentName, AgentPlan, AgentTaskResult
+from app.ai.telemetry import RunTelemetry
 
 BuyerId = Literal["A", "B"]
 MessageContent = Annotated[
@@ -131,12 +132,13 @@ class ChatRunStats(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model_calls: int = Field(ge=1)
+    model_calls: int = Field(ge=0)
     tool_rounds: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
     query_analysis: QueryAnalysis | None = None
     agent_plan: AgentPlan | None = None
     task_results: list[AgentTaskResult] = Field(default_factory=list)
+    telemetry: RunTelemetry | None = None
 
     @model_validator(mode="after")
     def validate_tool_counts(self) -> Self:

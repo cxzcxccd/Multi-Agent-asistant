@@ -14,11 +14,21 @@ ProductSort = Literal["default", "price-asc", "price-desc"]
 
 
 class ProductCategory(StrEnum):
-    """数码旗舰店当前展示的商品分类。"""
+    """数码旗舰店的默认商品分类。"""
 
     HEADPHONES = "耳机"
     CHARGERS = "充电器"
     HUBS = "扩展坞"
+
+
+CategoryName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)
+]
+
+
+ProductImageUrl = Annotated[
+    str, StringConstraints(pattern=r"^(?:|/api/products/images/[0-9a-f]{32}\.(?:jpg|png|webp))$")
+]
 
 
 class Product(BaseModel):
@@ -28,7 +38,7 @@ class Product(BaseModel):
 
     id: ProductId
     name: NonBlankText
-    category: ProductCategory
+    category: CategoryName
     series: NonBlankText
     price: int = Field(ge=0, description="当前演示价格，单位为人民币元")
     stock: int = Field(ge=0, description="当前演示库存数量")
@@ -36,6 +46,7 @@ class Product(BaseModel):
     description: NonBlankText
     color: NonBlankText
     source: NonBlankText
+    image_url: ProductImageUrl = ""
 
 
 class ProductSearchParams(BaseModel):
@@ -44,7 +55,7 @@ class ProductSearchParams(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     keyword: str | None = Field(default=None, min_length=1, max_length=100)
-    category: ProductCategory | None = None
+    category: CategoryName | None = None
     min_price: int | None = Field(default=None, ge=0)
     max_price: int | None = Field(default=None, ge=0)
     in_stock: bool = False
@@ -87,7 +98,7 @@ class ProductCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: NonBlankText
-    category: ProductCategory
+    category: CategoryName
     series: NonBlankText
     price: int = Field(ge=0, description="价格，单位为人民币元")
     stock: int = Field(ge=0, description="初始库存数量")
@@ -95,6 +106,7 @@ class ProductCreate(BaseModel):
     description: NonBlankText
     color: NonBlankText
     source: NonBlankText = Field(default="手动录入")
+    image_url: ProductImageUrl = ""
 
 
 class ProductUpdate(BaseModel):
@@ -103,13 +115,14 @@ class ProductUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: NonBlankText | None = None
-    category: ProductCategory | None = None
+    category: CategoryName | None = None
     series: NonBlankText | None = None
     price: int | None = Field(default=None, ge=0)
     specs: list[NonBlankText] | None = Field(default=None, min_length=1)
     description: NonBlankText | None = None
     color: NonBlankText | None = None
     source: NonBlankText | None = None
+    image_url: ProductImageUrl | None = None
 
     @model_validator(mode="before")
     @classmethod

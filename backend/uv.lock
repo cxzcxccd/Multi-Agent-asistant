@@ -533,10 +533,12 @@ dependencies = [
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "mcp" },
+    { name = "pillow" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "pymilvus" },
     { name = "sqlalchemy" },
+    { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -558,10 +560,12 @@ requires-dist = [
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1" },
     { name = "mcp", specifier = ">=1.28,<2" },
+    { name = "pillow", specifier = ">=12,<13" },
     { name = "pydantic-settings" },
     { name = "pyjwt", specifier = ">=2.10,<3" },
     { name = "pymilvus", specifier = ">=2.6,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "tiktoken", specifier = ">=0.7,<1" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 

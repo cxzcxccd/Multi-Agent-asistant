@@ -17,6 +17,7 @@ from app.ai.multi_agent.schemas import (
 from app.db.base import Base
 from app.modules.agent_runs.repository import SqlAgentRunRepository
 from app.modules.conversations.models import ConversationRecord
+from app.ai.telemetry import RunTelemetry, TokenUsage, ModelUsage
 
 
 def test_agent_run_repository_saves_plan_and_task_results(tmp_path: Path) -> None:
@@ -75,7 +76,9 @@ def test_agent_run_repository_saves_plan_and_task_results(tmp_path: Path) -> Non
         tool_calls=1,
         started_at=now,
         completed_at=now,
+        telemetry=RunTelemetry(model_name="fixture-model", token_usage=TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120), usage_calls=1, model_calls=3, mcp_enabled=["catalog"]),
     )
+    run.results[0].model_usage = [ModelUsage(stage="product_agent", model_name="fixture-model", usage=TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120))]
     repository = SqlAgentRunRepository(session_factory)
 
     repository.add(run)

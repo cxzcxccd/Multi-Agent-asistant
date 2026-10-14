@@ -140,6 +140,7 @@ class SqlProductRepository:
             description=record.description,
             color=record.color,
             source=record.source,
+            image_url=record.image_url,
         )
 
     def exists(self, product_id: str) -> bool:
@@ -170,7 +171,7 @@ class SqlProductRepository:
             record = ProductRecord(
                 id=product.id,
                 name=product.name,
-                category=product.category.value,
+                category=product.category,
                 series=product.series,
                 price=product.price,
                 stock=product.stock,
@@ -178,6 +179,7 @@ class SqlProductRepository:
                 description=product.description,
                 color=product.color,
                 source=product.source,
+                image_url=product.image_url,
             )
             session.add(record)
             try:

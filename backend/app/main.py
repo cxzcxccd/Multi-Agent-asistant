@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.ai.checkpoints import open_sqlite_checkpointer
 from app.api.router import api_router
 from app.core.config import settings
+from app.core.tracing import TraceMiddleware, configure_tracing
 from app.db.initialize import initialize_database
 from app.mcp.server import create_catalog_mcp
 from app.mcp.orders import create_order_mcp
@@ -35,6 +36,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_tracing()
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
@@ -47,7 +49,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Trace-ID", "X-Run-ID", "ETag"],
     )
+    application.add_middleware(TraceMiddleware)
     application.include_router(api_router, prefix="/api")
     catalog_mcp = create_catalog_mcp()
     application.state.catalog_mcp = catalog_mcp

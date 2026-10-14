@@ -9,7 +9,10 @@ from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from app.core.tracing import context, emit, ToolTraceCallback
+
 from app.ai.model_client import ModelClientError
+from app.ai.context_budget import ContextBudgetExceededError
 from app.ai.multi_agent.schemas import AgentRunRecord
 from app.ai.runtime import (
     RuntimeErrorBase,
@@ -20,6 +23,7 @@ from app.ai.runtime import (
 )
 from app.modules.conversations.repository import ConversationRepository
 from app.modules.conversations.memory import MemoryService
+from app.modules.catalog.links import append_product_links
 from app.modules.conversations.schemas import (
     AfterSaleConfirmationDraft,
     BuyerId,
@@ -186,6 +190,8 @@ class ConversationService:
                     turn.model_messages,
                     config=self._runtime_config(conversation_id, request.buyer_id),
                 )
+            except ContextBudgetExceededError as exc:
+                raise AssistantReplyError("必要上下文超过配置预算，请拆分诉求或联系管理员调整预算") from exc
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
 
@@ -253,6 +259,8 @@ class ConversationService:
                     stream_event = self._convert_runtime_event(runtime_event)
                     if stream_event is not None:
                         yield stream_event
+            except ContextBudgetExceededError as exc:
+                raise AssistantReplyError("必要上下文超过配置预算，请拆分诉求或联系管理员调整预算") from exc
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法生成回复") from exc
 
@@ -288,6 +296,8 @@ class ConversationService:
                     request.model_dump(mode="json"),
                     config=self._runtime_config(conversation_id, buyer_id),
                 )
+            except ContextBudgetExceededError as exc:
+                raise AssistantReplyError("必要上下文超过配置预算，请拆分诉求或联系管理员调整预算") from exc
             except (ModelClientError, RuntimeErrorBase) as exc:
                 raise AssistantReplyError("AI 客服暂时无法恢复确认流程") from exc
 
@@ -342,6 +352,7 @@ class ConversationService:
         human_message = HumanMessage(
             content=user_message.content,
             id=str(user_message.id),
+            additional_kwargs={"source_created_at": user_message.created_at.isoformat()},
         )
         model_messages.append(human_message)
 
@@ -376,6 +387,10 @@ class ConversationService:
         reply_text = result.reply.text.strip()
         if not reply_text:
             raise AssistantReplyError("AI 客服没有返回有效的文本回复")
+        reply_text = append_product_links(
+            reply_text,
+            (tool_result for task in result.task_results for tool_result in task.tool_results),
+        )
 
         if assistant_message_id is None:
             assistant_message_id = self._id_factory()
@@ -415,6 +430,7 @@ class ConversationService:
             user_message=turn.user_message,
             assistant_message=assistant_message,
             run=ChatRunStats(
+                telemetry=result.telemetry,
                 model_calls=result.model_calls,
                 tool_rounds=result.tool_rounds,
                 tool_calls=result.tool_calls,
@@ -467,6 +483,10 @@ class ConversationService:
         reply_text = result.reply.text.strip()
         if not reply_text:
             raise AssistantReplyError("AI 客服没有返回有效的文本回复")
+        reply_text = append_product_links(
+            reply_text,
+            (tool_result for task in result.task_results for tool_result in task.tool_results),
+        )
 
         assistant_message = ConversationMessage(
             id=self._id_factory(),
@@ -496,6 +516,7 @@ class ConversationService:
             user_message=user_message,
             assistant_message=assistant_message,
             run=ChatRunStats(
+                telemetry=result.telemetry,
                 model_calls=result.model_calls,
                 tool_rounds=result.tool_rounds,
                 tool_calls=result.tool_calls,
@@ -510,6 +531,7 @@ class ConversationService:
         """把运行时暂停信息转换成稳定的接口统计格式。"""
 
         return ChatRunStats(
+            telemetry=pause.telemetry,
             model_calls=pause.model_calls,
             tool_rounds=pause.tool_rounds,
             tool_calls=pause.tool_calls,
@@ -540,7 +562,8 @@ class ConversationService:
             status = "partial"
 
         run = AgentRunRecord(
-            id=self._id_factory(),
+            telemetry=result.telemetry,
+            id=UUID(context.get()["run_id"]) if context.get().get("run_id") else self._id_factory(),
             conversation_id=conversation.id,
             buyer_id=conversation.buyer_id,
             status=status,
@@ -713,7 +736,10 @@ class ConversationService:
     ) -> dict[str, object]:
         """创建一次客服运行使用的 LangGraph 配置。"""
 
+        emit("conversation.bind", conversation_id=str(conversation_id))
         return {
+            "callbacks": [ToolTraceCallback()],
+            "metadata": {**context.get(), "conversation_id": str(conversation_id)},
             "configurable": {
                 "thread_id": str(conversation_id),
                 "buyer_id": buyer_id,
@@ -870,7 +896,8 @@ class ConversationService:
         for message in messages:
             if message.role is MessageRole.USER:
                 result.append(
-                    HumanMessage(content=message.content, id=str(message.id))
+                    HumanMessage(content=message.content, id=str(message.id),
+                                 additional_kwargs={"source_created_at": message.created_at.isoformat()})
                 )
             elif message.role in {MessageRole.ASSISTANT, MessageRole.STAFF}:
                 result.append(AIMessage(content=message.content, id=str(message.id)))

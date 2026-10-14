@@ -21,3 +21,5 @@ backend/data/evaluation/results/
 backend/data/evaluation/rag_annotations_shard_*.jsonl
 .workbuddy/
 backend/data/evaluation/external/Chinese-EcomQA/
+
+backend/data/product_images/

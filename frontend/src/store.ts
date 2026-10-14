@@ -18,6 +18,7 @@ import {
 } from './api';
 import type { ApiAfterSaleRequest, ApiConversation, ChatStreamCallbacks } from './api';
 import { buyers, findOrder, findProduct, orders, policies, products } from './data';
+import { productLinksFromTools } from './productLinks';
 import type {
   AfterSale,
   BuyerId,
@@ -424,6 +425,10 @@ export async function cancelDraft(conversationId: string): Promise<void> {
           });
         }
         current.mode = response.mode;
+        const run = s.runs.find(
+          (item) => item.conversationId === conversationId && item.origin === 'backend',
+        );
+        if (run && response.run?.telemetry) run.telemetry = response.run.telemetry;
         delete current.draft;
       });
     } catch (error) {
@@ -450,7 +455,7 @@ function submitDraftInScriptMode(conversationId: string, draftId: string, revisi
       !c?.draft ||
       c.draft.id !== draftId ||
       c.draft.revision !== revision ||
-      !c.draft.reason.trim() ||
+      c.draft.reason.trim().length < 5 ||
       !findOrder(c.draft.orderId, c.buyer)
     )
       return;
@@ -552,7 +557,7 @@ async function submitDraftToBackend(
     !draft ||
     draft.id !== draftId ||
     draft.revision !== revision ||
-    !draft.reason.trim()
+    draft.reason.trim().length < 5
   ) {
     throw new Error('草稿已变更，请重新核对后提交。');
   }
@@ -603,6 +608,10 @@ async function submitDraftToBackend(
         });
       }
       current.mode = resumedResponse.mode;
+      const run = s.runs.find(
+        (item) => item.conversationId === conversationId && item.origin === 'backend',
+      );
+      if (run && resumedResponse.run?.telemetry) run.telemetry = resumedResponse.run.telemetry;
     } else {
       addMessage(current, 'assistant', '申请已提交，正在等待客服审核。你可以在这里查看进度。', {
         requestId: request.id,
@@ -826,28 +835,21 @@ function planReply(c: Conversation, text: string): Plan {
           steps: [lookup],
         };
       const hasReason =
-        /没声音|故障|损坏|坏了|不喜欢|不合适|断连|不能|无法|质量|破损|杂音|不充电/.test(text) ||
+        /无理由|没声音|故障|损坏|坏了|不喜欢|不合适|断连|不能|无法|质量|破损|杂音|不充电/.test(
+          text,
+        ) ||
         (c.context.awaiting === 'reason' && text.trim().length >= 2);
-      if (!hasReason)
-        return {
-          ...base,
-          module: '售后服务',
-          text: '已找到订单。请具体说说遇到的问题，例如「耳机有一边没声音」，我会整理申请供你确认。',
-          orders: [order.id],
-          context: { ...context, awaiting: 'reason' },
-          steps: [lookup],
-        };
       const draft: Draft = {
         id: uid(),
         orderId: order.id,
         kind: /换货/.test(text) ? '换货申请' : '退货申请',
-        reason: text,
+        reason: hasReason ? text : '',
         revision: 1,
       };
       return {
         ...base,
         module: '售后服务',
-        text: '我已整理好售后申请草稿。请核对商品和问题描述，确认提交后将由客服审核。',
+        text: '## 草稿已准备\n请先查看下方售后草稿，核对订单和商品。\n\n## 需要补充\n请在草稿中填写或完善退货原因。\n\n## 下一步\n核对内容并确认提交后，申请才会转交人工审核。',
         orders: [order.id],
         draft,
         context,
@@ -1313,10 +1315,21 @@ async function sendBackendReply(input: BackendReplyInput) {
         const run = s.runs.find((item) => item.id === runId)!;
         const message = target.messages.find((item) => item.id === streamingMessageId);
         target.remoteId = data.conversation_id;
+        run.telemetry = data.run.telemetry;
         target.mode = data.mode;
+        // 中断事件本身带有草稿，不依赖前面的工具状态事件是否到达。
+        const confirmationDraft = draftFromToolResults([
+          {
+            name: 'prepare_after_sale_draft',
+            output: { artifact: data.confirmation },
+          },
+        ]);
+        if (!target.draft && confirmationDraft) target.draft = confirmationDraft;
         if (message) {
-          message.text = '售后申请草稿已经准备好，请核对后确认或取消。';
+          message.text =
+            '## 草稿已准备\n请先查看下方售后草稿，核对订单和商品。\n\n## 需要补充\n请在草稿中填写或完善退货原因。\n\n## 下一步\n核对内容并确认提交后，申请才会转交人工审核。';
           message.streaming = false;
+          if (target.draft) message.draftId = target.draft.id;
         }
         if (target.draft) {
           target.draft.resumeRequired = true;
@@ -1343,6 +1356,7 @@ async function sendBackendReply(input: BackendReplyInput) {
         const target = s.conversations.find((item) => item.id === conversationId)!;
         const run = s.runs.find((item) => item.id === runId)!;
         const message = target.messages.find((item) => item.id === streamingMessageId)!;
+        run.telemetry = response.run.telemetry;
 
         target.remoteId = response.conversation_id;
         target.mode = response.mode;
@@ -1353,6 +1367,13 @@ async function sendBackendReply(input: BackendReplyInput) {
           text: response.assistant_message.content,
           time: response.assistant_message.created_at,
           streaming: false,
+          productLinks: productLinksFromTools(
+            [
+              ...(response.run.task_results || []).flatMap((task) => task.tool_results),
+              ...run.events.flatMap((event) => event.toolResults || []),
+            ],
+            response.assistant_message.content,
+          ),
         });
 
         run.status = 'success';

@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { getProductDetail, getProducts } from './api';
+import { getProductCategories, getProductDetail, getProducts, productImageUrl } from './api';
 import { money, policies } from './data';
 import { Badge, Modal, SourceList } from './components';
 import type { Category, Product, View } from './types';
@@ -23,9 +23,15 @@ type CategoryFilter = '全部商品' | Category;
 type PriceFilter = 'all' | 'under200' | '200to400' | 'over400';
 type ProductSort = 'default' | 'price-asc' | 'price-desc';
 
-const categories: CategoryFilter[] = ['全部商品', '耳机', '充电器', '扩展坞'];
-
 export function CatalogPhoto({ product }: { product: Product }) {
+  if (product.image_url)
+    return (
+      <img
+        className="catalog-photo catalog-uploaded-photo"
+        src={productImageUrl(product.image_url)}
+        alt={product.name}
+      />
+    );
   const productNumber = Number.parseInt(product.id.slice(1), 10);
   const index = Number.isNaN(productNumber) ? 0 : Math.max(productNumber - 1, 0);
   return (
@@ -41,11 +47,23 @@ export default function Shop({
   origin,
   onBack,
   onProductAction,
+  initialProductId,
+  active = true,
+  onDetailClose,
 }: {
   origin: Exclude<View, 'shop'>;
   onBack: () => void;
-  onProductAction: (id: string) => void;
+  onProductAction: (product: Product) => void;
+  initialProductId?: string;
+  active?: boolean;
+  onDetailClose?: () => void;
 }) {
+  const [categories, setCategories] = useState<CategoryFilter[]>([
+    '全部商品',
+    '耳机',
+    '充电器',
+    '扩展坞',
+  ]);
   const [category, setCategory] = useState<CategoryFilter>('全部商品');
   const [query, setQuery] = useState('');
   const [queryInput, setQueryInput] = useState('');
@@ -63,6 +81,25 @@ export default function Shop({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const staff = origin === 'workbench';
+
+  useEffect(() => {
+    setSelected(active ? initialProductId : undefined);
+  }, [initialProductId, active]);
+
+  const closeDetail = () => {
+    setSelected(undefined);
+    if (initialProductId) onDetailClose?.();
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getProductCategories(controller.signal)
+      .then((items) => {
+        if (!controller.signal.aborted) setCategories(['全部商品', ...items]);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [reloadVersion]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -161,9 +198,9 @@ export default function Shop({
     setOnlyStock(false);
     setSort('default');
   };
-  const act = (id: string) => {
+  const act = (product: Product) => {
     setSelected(undefined);
-    onProductAction(id);
+    onProductAction(product);
   };
   return (
     <div className="shop-page">
@@ -247,7 +284,7 @@ export default function Shop({
             <strong>{catalogTotal || '—'}</strong> 件数码好物
           </span>
           <span>
-            <strong>3</strong> 大商品分类
+            <strong>{categories.length - 1}</strong> 大商品分类
           </span>
           <span>
             <Check size={17} />
@@ -364,7 +401,7 @@ export default function Shop({
                     {p.stock ? `库存 ${p.stock} 件` : '补货时间待定'}
                   </span>
                   <button
-                    onClick={() => act(p.id)}
+                    onClick={() => act(p)}
                     aria-label={`${staff ? '引用' : '咨询'} ${p.name}`}
                   >
                     <MessageSquare size={14} />
@@ -390,7 +427,7 @@ export default function Shop({
         <span>商品、价格与库存均为演示数据。需要具体建议时，可以随时回到客服会话。</span>
       </div>
       {selected && (
-        <Modal title="商品详情" onClose={() => setSelected(undefined)}>
+        <Modal title="商品详情" onClose={closeDetail}>
           {detailLoading ? (
             <div className="large-empty shop-detail-status" aria-live="polite">
               <PackageSearch size={36} />
@@ -401,7 +438,7 @@ export default function Shop({
               <PackageSearch size={36} />
               <h3>商品详情加载失败</h3>
               <p>{detailError}</p>
-              <button className="btn" onClick={() => setSelected(undefined)}>
+              <button className="btn" onClick={closeDetail}>
                 关闭
               </button>
             </div>
@@ -445,10 +482,10 @@ export default function Shop({
                 外观为 AI 生成示意图；商品名称、参数和库存以本演示数据为准。
               </p>
               <div className="modal-actions">
-                <button className="btn" onClick={() => setSelected(undefined)}>
+                <button className="btn" onClick={closeDetail}>
                   继续逛店
                 </button>
-                <button className="btn btn-primary" onClick={() => act(selectedProduct.id)}>
+                <button className="btn btn-primary" onClick={() => act(selectedProduct)}>
                   <MessageSquare size={16} />
                   {staff ? '引用到客服回复' : '咨询这件商品'}
                 </button>

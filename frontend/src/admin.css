@@ -301,3 +301,16 @@
     grid-template-columns: 1fr;
   }
 }
+
+.admin-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.admin-image-preview img {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  border: 1px solid #e1e6ee;
+  border-radius: 12px;
+}

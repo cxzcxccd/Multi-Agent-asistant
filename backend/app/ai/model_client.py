@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 
 from app.ai.tools import get_customer_service_tools
 from app.core.config import Settings, settings
+from app.ai.context_budget import prepare_context
 
 
 class ModelClientError(RuntimeError):
@@ -35,8 +36,10 @@ class ModelClient:
         self,
         model: Any,
         tools: Sequence[BaseTool] | None = None,
+        app_settings: Settings | None = None,
     ) -> None:
         self._model = model
+        self._settings = app_settings or settings
         self._tools = tuple(get_customer_service_tools() if tools is None else tools)
         self._runnable: Runnable[Any, Any] = (
             model.bind_tools(list(self._tools)) if self._tools else model
@@ -61,8 +64,9 @@ class ModelClient:
     ) -> AIMessage:
         """同步调用模型并返回一条完整的 AI 消息。"""
 
+        prepared, _report = prepare_context(messages, self._tools, self._settings)
         try:
-            response = self._runnable.invoke(list(messages), config=config)
+            response = self._runnable.invoke(prepared, config=config)
         except Exception as exc:
             raise ModelInvocationError(
                 "模型调用失败，请检查模型配置、网络连接和服务状态"
@@ -76,8 +80,9 @@ class ModelClient:
     ) -> AIMessage:
         """异步调用模型并返回一条完整的 AI 消息。"""
 
+        prepared, _report = prepare_context(messages, self._tools, self._settings)
         try:
-            response = await self._runnable.ainvoke(list(messages), config=config)
+            response = await self._runnable.ainvoke(prepared, config=config)
         except Exception as exc:
             raise ModelInvocationError(
                 "模型调用失败，请检查模型配置、网络连接和服务状态"
@@ -91,8 +96,9 @@ class ModelClient:
     ) -> Iterator[AIMessageChunk]:
         """同步流式返回模型生成的消息片段。"""
 
+        prepared, _report = prepare_context(messages, self._tools, self._settings)
         try:
-            for chunk in self._runnable.stream(list(messages), config=config):
+            for chunk in self._runnable.stream(prepared, config=config):
                 yield self._require_ai_message_chunk(chunk)
         except ModelClientError:
             raise
@@ -108,8 +114,9 @@ class ModelClient:
     ) -> AsyncIterator[AIMessageChunk]:
         """异步流式返回模型生成的消息片段。"""
 
+        prepared, _report = prepare_context(messages, self._tools, self._settings)
         try:
-            async for chunk in self._runnable.astream(list(messages), config=config):
+            async for chunk in self._runnable.astream(prepared, config=config):
                 yield self._require_ai_message_chunk(chunk)
         except ModelClientError:
             raise
@@ -174,5 +181,7 @@ def create_model_client(
         temperature=current_settings.model_temperature,
         timeout=current_settings.model_timeout_seconds,
         max_retries=current_settings.model_max_retries,
+        max_tokens=current_settings.context_output_reserve_tokens,
+        stream_usage=True,
     )
-    return ModelClient(model=model, tools=tools)
+    return ModelClient(model=model, tools=tools, app_settings=current_settings)

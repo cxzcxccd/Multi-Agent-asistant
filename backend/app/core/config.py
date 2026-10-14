@@ -2,8 +2,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[2] / "data" / "app.db"
@@ -64,6 +65,9 @@ class Settings(BaseSettings):
     intent_embedding_cache_dir: str = str(DEFAULT_INTENT_CACHE_PATH)
     intent_route_min_score: float = Field(default=0.55, ge=-1, le=1)
     intent_route_min_margin: float = Field(default=0.0, ge=0, le=1)
+    # 初始保守值，需用本项目的标注集校准；余弦分数不是概率。
+    intent_fast_min_score: float = Field(default=0.85, ge=-1, le=1)
+    intent_fast_min_margin: float = Field(default=0.15, ge=0, le=2)
     # 旧环境变量名继续有效，但此阈值现在仅用于向量候选，不过滤 RRF 分数。
     knowledge_min_score: float = Field(default=0.32, ge=0, le=1)
     knowledge_bm25_k1: float = Field(default=1.2, gt=0)
@@ -73,6 +77,21 @@ class Settings(BaseSettings):
     knowledge_chunk_size: int = Field(default=500, ge=100, le=2000)
     knowledge_chunk_overlap: int = Field(default=60, ge=0, le=500)
     knowledge_vector_candidates: int = Field(default=20, ge=5, le=200)
+    knowledge_retrieval_strategy: Literal["hybrid", "hyde"] = "hybrid"
+    knowledge_hyde_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    knowledge_hyde_max_chars: int = Field(default=600, ge=100, le=2000)
+    # Application budget, not a claim about the configured model's context window.
+    context_window_tokens: int = Field(default=16384, ge=1024)
+    context_output_reserve_tokens: int = Field(default=2048, ge=1)
+    context_protocol_reserve_tokens: int = Field(default=1024, ge=0)
+    context_compress_ratio: float = Field(default=0.8, gt=0, le=1)
+    context_token_encoding: str = "cl100k_base"
+
+    @model_validator(mode="after")
+    def validate_context_budget(self):
+        if self.context_output_reserve_tokens + self.context_protocol_reserve_tokens >= self.context_window_tokens:
+            raise ValueError("上下文窗口必须大于回答与协议预留之和")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",
